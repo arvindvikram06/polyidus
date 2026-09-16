@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "reviewer"
+version = "0.2.0"
+description = "Multi-agent reviewer for staged git changes."
+requires-python = ">=3.10"
+dependencies = [
+    "typer>=0.12",
+    "pydantic>=2.7",
+    "tiktoken>=0.7",
+    "pyyaml>=6.0",
+    "langchain[mcp]>=1.4.0",
+    "langgraph>=0.2",
+    "langchain-openai>=0.2",
+    "mcp>=2.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "anyio>=4.0"]
+
+[project.scripts]
+reviewer = "reviewer.cli:app"
+reviewer-fs-server = "reviewer.fs_server.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["reviewer"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

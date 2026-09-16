@@ -1,0 +1,36 @@
+# Secrets and Environments
+.env
+.venv
+.venv/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Development artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+.mypy_cache/
+.ruff_cache/
+
+# IDEs and OS files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Other project-specific ignores
+v2/
+microservices-main/
+test-mern-app/
+trace.jsonl
