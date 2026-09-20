@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
+
 import pytest
 
-from reviewer.fs_server.tools import ToolError, grep, list_dir, read_file
+from reviewer.sandbox.files import ToolError, grep, list_dir, read_file
 
 
 @pytest.fixture
@@ -69,3 +71,77 @@ def test_grep_rejects_an_invalid_regex(repo):
 def test_grep_does_not_follow_symlinks_out_of_the_repo(repo):
     (repo / "leak.txt").symlink_to(repo.parent / "outside.txt")
     assert grep(repo, "credentials") == "no matches"
+
+
+# --- ripgrep fast path ------------------------------------------------------
+
+
+def _fake_rg(tmp_path, lines: list[str], exit_code: int = 0):
+    """A stub `rg` on PATH, so the fast path is exercised without installing one.
+
+    The output is written to a file and `cat`-ed rather than echoed, so the
+    test's expectations are not hostage to shell escaping.
+    """
+    bindir = tmp_path / "bin"
+    bindir.mkdir(exist_ok=True)
+    payload = bindir / "rg-output.txt"
+    payload.write_text("".join(f"{line}\n" for line in lines))
+    script = bindir / "rg"
+    script.write_text(f"#!/bin/sh\ncat {payload}\nexit {exit_code}\n")
+    script.chmod(0o755)
+    return bindir
+
+
+def test_ripgrep_output_is_reformatted_to_the_same_contract(repo, tmp_path, monkeypatch):
+    """`rg` prints `path:line:text`; callers expect `path:line: text`.
+
+    The format is a contract — anchoring, the tracer and every caller parse it —
+    so switching engines must not change it.
+    """
+    bindir = _fake_rg(tmp_path, ["./app/auth.py:1:SECRET = 1", "app/db.py:7:  SELECT *"])
+    monkeypatch.setenv("PATH", f"{bindir}:{os.environ['PATH']}")
+
+    out = grep(repo, "SECRET")
+
+    assert out.splitlines() == ["app/auth.py:1: SECRET = 1", "app/db.py:7: SELECT *"]
+
+
+def test_ripgrep_finding_nothing_is_no_matches_not_a_fallback(repo, tmp_path, monkeypatch):
+    """Exit code 1 means "ran fine, found nothing" — not a failure.
+
+    Treating it as one would silently re-run the slow path on every miss.
+    """
+    bindir = _fake_rg(tmp_path, [], exit_code=1)
+    monkeypatch.setenv("PATH", f"{bindir}:{os.environ['PATH']}")
+
+    assert grep(repo, "AbsentSymbol") == "no matches"
+
+
+def test_a_pattern_rust_rejects_is_reported_as_an_invalid_regex(repo, tmp_path, monkeypatch):
+    """Rust's engine rejects some patterns Python accepts, such as lookarounds.
+
+    That must surface as the error every caller already handles, not as a
+    silent fallback that quietly searches for something else.
+    """
+    bindir = tmp_path / "bin"
+    bindir.mkdir(exist_ok=True)
+    script = bindir / "rg"
+    script.write_text(
+        "#!/bin/sh\n"
+        'echo "regex parse error: look-around is not supported" >&2\n'
+        "exit 2\n"
+    )
+    script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bindir}:{os.environ['PATH']}")
+
+    with pytest.raises(ToolError, match="invalid regex"):
+        grep(repo, "(?=lookahead)")
+
+
+def test_no_ripgrep_on_path_still_searches(repo, tmp_path, monkeypatch):
+    """A slim container without `rg` must still review."""
+    empty = tmp_path / "empty-bin"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
+
+    assert "app/auth.py:1" in grep(repo, "SECRET")

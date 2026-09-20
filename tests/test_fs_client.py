@@ -5,9 +5,9 @@ import json
 import pytest
 from langchain_core.tools import StructuredTool
 
-from reviewer import fs_client
-from reviewer.fs_client import FsBackendError, _traced, repo_tools
-from reviewer.tracer import NORMAL, Tracer
+from legacy.reviewer_cli.mcp import fs_client
+from legacy.reviewer_cli.mcp.fs_client import FsBackendError, _traced, repo_tools
+from reviewer.core.tracer import NORMAL, Tracer
 
 SCHEMA = {
     "type": "object",

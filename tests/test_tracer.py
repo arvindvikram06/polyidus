@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from langchain_core.runnables.config import ContextThreadPoolExecutor
 
-from reviewer.tracer import NORMAL, Tracer
+from reviewer.core.tracer import NORMAL, Tracer
 
 
 def _events(path):

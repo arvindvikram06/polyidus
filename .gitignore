@@ -1,5 +1,6 @@
 # Secrets and Environments
 .env
+secrets/
 .venv
 .venv/
 env/
@@ -9,6 +10,9 @@ env.bak/
 venv.bak/
 
 # Development artifacts
+dist/
+build/
+*.egg-info/
 __pycache__/
 *.py[cod]
 *$py.class
@@ -34,3 +38,9 @@ v2/
 microservices-main/
 test-mern-app/
 trace.jsonl
+
+# Standalone .NET fixture repo (has its own git remote)
+OrderApi/
+
+# Sample app used as review fixture
+EstateSync/

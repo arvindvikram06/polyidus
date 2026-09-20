@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 from mcp import Client
 
-from reviewer.fs_server.roots import RootError, RootRegistry
-from reviewer.fs_server.server import build_server
+from legacy.reviewer_cli.mcp.fs_server_app import build_server
+from legacy.reviewer_cli.mcp.roots import RootError, RootRegistry
 
 
 @pytest.fixture

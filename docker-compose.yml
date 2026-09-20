@@ -1,0 +1,98 @@
+# The reviewer bot, as four containers.
+#
+# The shape here IS the architecture from the blueprint — read the `ports:` keys:
+# only `api` publishes one. `worker` has no inbound port at all, which is the
+# deployment-level expression of "one door in, everything else dials out".
+#
+#   docker compose up -d postgres redis     # just the stores, while developing
+#   docker compose up --build               # everything
+#   docker compose logs -f worker           # watch a review happen
+#   docker compose down -v                  # stop and wipe the data volumes
+
+name: reviewer-bot
+
+services:
+  # ---------------------------------------------------------------- stores --
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: reviewer
+      POSTGRES_PASSWORD: reviewer
+      POSTGRES_DB: reviewer
+    ports:
+      # Published so you can inspect it from your laptop with psql or a GUI.
+      # In production this would not be here — only the app containers need it.
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Anything in this directory runs ONCE, on first boot of an empty volume.
+      # Change the schema later and it will NOT re-run: `docker compose down -v`
+      # to wipe the volume, or apply a migration by hand.
+      - ./bot/db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      # `depends_on: condition: service_healthy` below waits on this. Without a
+      # healthcheck, Compose starts the app the instant the container exists —
+      # which is several seconds before Postgres is accepting connections.
+      test: ["CMD-SHELL", "pg_isready -U reviewer -d reviewer"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:8-alpine
+    # --appendonly no: locks are ephemeral by nature. Losing them on restart is
+    # correct; a lock that outlives the worker holding it is a stuck PR.
+    command: ["redis-server", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # ------------------------------------------------------------------ app --
+  # api and worker are THE SAME IMAGE with different commands. This is the
+  # normal pattern: one build, one dependency set, different entrypoints.
+  api:
+    build: .
+    command: ["uvicorn", "bot.api:app", "--host", "0.0.0.0", "--port", "8000"]
+    env_file: [.env]
+    environment:
+      DATABASE_URL: postgresql://reviewer:reviewer@postgres:5432/reviewer
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8000:8000"          # ← the only inbound port in this whole file
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis:    {condition: service_healthy}
+    volumes:
+      # Live code reload while you develop. Drop this for a real deployment.
+      - ./bot:/app/bot:ro
+      - ./reviewer:/app/reviewer:ro
+
+  worker:
+    build: .
+    command: ["python", "-m", "bot.worker"]
+    env_file: [.env]
+    environment:
+      DATABASE_URL: postgresql://reviewer:reviewer@postgres:5432/reviewer
+      REDIS_URL: redis://redis:6379/0
+      WORKER_ID: worker-1
+    # NO ports key. Nothing can reach this container from outside the compose
+    # network. It claims jobs by polling Postgres and dials out for everything
+    # else. Scale it freely: `docker compose up -d --scale worker=3`.
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis:    {condition: service_healthy}
+    volumes:
+      - ./bot:/app/bot:ro
+      - ./reviewer:/app/reviewer:ro
+      # Stage H only — lets the worker start a sibling sandbox container on the
+      # host's Docker daemon. Commented out because mounting this socket gives
+      # the container effective root on your machine; turn it on deliberately,
+      # when you get to running tests, and never in a deployment.
+      # - /var/run/docker.sock:/var/run/docker.sock
+
+volumes:
+  pgdata:

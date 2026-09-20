@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from reviewer.diff_context import slice_diff, split_by_file
+from reviewer.models.diff_context import slice_diff, split_by_file
 
 DIFF = """diff --git a/app/auth.py b/app/auth.py
 index 1111111..2222222 100644
