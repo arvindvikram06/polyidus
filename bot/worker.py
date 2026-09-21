@@ -1,0 +1,273 @@
+"""The worker: claims jobs and does the slow work GitHub would not wait for.
+
+A review takes minutes; a webhook gets about ten seconds. So the API server
+writes a job row and returns, and this process picks it up. That split is the
+entire reason Postgres is in this project — it holds no review state, only
+work that must survive a crash.
+
+The loop itself is deliberately dull: claim, lock, handle, release. Almost
+every plumbing failure (signature, replay, loop guard, the ten-second
+response) produces symptoms that look like a broken agent, so the plumbing is
+kept boring enough to rule out.
+
+    python -m bot.worker
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import logging
+import signal
+
+import asyncpg
+
+from bot import config, db, locks
+from bot.github import auth, client
+from bot.review import publish
+from bot.review.local_tools import repo_tools
+from bot.review.recheck import recheck
+from bot.review.run import review_pull_request
+from bot.workspace import checkout
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)-7s %(name)s  %(message)s",
+    datefmt="%H:%M:%S",
+)
+log = logging.getLogger("bot.worker")
+
+_stop = asyncio.Event()
+
+
+# ------------------------------------------------------------- handlers -----
+async def handle_review(job: asyncpg.Record) -> None:
+    owner, repo, pr = job["owner"], job["repo"], job["pr_number"]
+    inst = job["installation_id"]
+
+    # Acknowledge first, and fast. From the human's side, nothing has happened
+    # since they pressed enter; without a signal they assume it is broken and
+    # comment again, which queues a second job.
+    if job["trigger_comment_id"]:
+        with contextlib.suppress(client.GitHubError):
+            await client.react_to_issue_comment(inst, owner, repo, job["trigger_comment_id"])
+
+    outcome = await review_pull_request(
+        installation_id=inst,
+        owner=owner,
+        repo=repo,
+        pr_number=pr,
+    )
+
+    if not outcome.ran:
+        log.info("review %s/%s#%s skipped: %s", owner, repo, pr, outcome.skipped)
+        await client.post_issue_comment(
+            inst, owner, repo, pr,
+            f"**Nothing to review** — {outcome.skipped}.\n\n"
+            f"<sub>requested by @{job['requested_by']}</sub>",
+        )
+        return
+
+    log.info(
+        "review %s/%s#%s done: %d finding(s), anchoring %s",
+        owner, repo, pr, len(outcome.findings), outcome.anchored,
+    )
+
+    # Every finding goes inline, on the line it is about; the summary carries
+    # none. An inline comment is a resolvable thread, and that thread is the
+    # record — it holds the finding, any reply, and the eventual decision,
+    # which a bulleted list in one comment cannot.
+    line_comments, file_comments, unplaceable, held_back = publish.build_comments(
+        outcome.findings, outcome.agreed_by
+    )
+    body = publish.summary_body(
+        head_sha=outcome.head_sha,
+        changed_files=len(outcome.changed_files),
+        posted=len(line_comments) + len(file_comments),
+        requested_by=job["requested_by"],
+        unplaceable=unplaceable,
+        held_back=held_back,
+        overview=outcome.summary_text,
+        aborted=outcome.aborted,
+        failed_specialists=outcome.failed_specialists,
+    )
+    accepted, rejected = await publish.post_review(
+        inst, owner, repo, pr,
+        body=body,
+        line_comments=line_comments,
+        file_comments=file_comments,
+        head_sha=outcome.head_sha,
+    )
+    for comment, reason in rejected:
+        log.warning("comment on %s rejected: %s", comment.get("path"), reason)
+    log.info(
+        "posted %s/%s#%s: %d on a line, %d file-level, %d unplaceable, "
+        "%d held back, %d rejected",
+        owner, repo, pr, len(line_comments), len(file_comments),
+        len(unplaceable), held_back, len(rejected),
+    )
+    if accepted and not line_comments:
+        # Worth shouting about. Every finding landed at file level, which means
+        # the quote-and-locate path produced nothing usable — the review is
+        # still correct but it reads as a pile of file comments.
+        log.warning(
+            "%s/%s#%s: NOTHING anchored to a line. Check the 'line numbers' "
+            "tally above for why.", owner, repo, pr,
+        )
+
+
+async def handle_dispute(job: asyncpg.Record) -> None:
+    """A human replied to one of our inline comments. Answer them.
+
+    The thread is the whole record. Its root comment IS the finding — file,
+    line and text — so there is nothing to look up and no table to consult.
+    That is what posting findings inline bought us.
+    """
+    owner, repo, pr = job["owner"], job["repo"], job["pr_number"]
+    inst = job["installation_id"]
+    reply_id = job["trigger_comment_id"]
+
+    # Fetch before reacting. A human who posts and then deletes leaves a
+    # delivery for a comment that no longer exists, and reacting to it first
+    # only produces a 403 on the way to the same 404.
+    try:
+        reply = await client.get_review_comment(inst, owner, repo, reply_id)
+    except client.GitHubError as exc:
+        if "404" in str(exc):
+            # Withdrawn before we got to it. Not a failure — retrying three
+            # times and marking the job dead is noise about a non-event.
+            log.info("dispute %s: the comment was deleted, nothing to answer", reply_id)
+            return
+        raise
+
+    with contextlib.suppress(client.GitHubError):
+        await client.react_to_review_comment(inst, owner, repo, reply_id)
+
+    root_id = reply.get("in_reply_to_id")
+    if not root_id:
+        log.info("dispute %s: not a reply, ignoring", reply_id)
+        return
+
+    root = await client.get_review_comment(inst, owner, repo, root_id)
+    if (root.get("user") or {}).get("login") != config.BOT_LOGIN:
+        # Someone replying to another human in a thread we never opened.
+        log.info("dispute %s: root comment is not ours, ignoring", root_id)
+        return
+
+    objection = (reply.get("body") or "").strip()
+    if not objection:
+        return
+
+    pull = await client.get_pull(inst, owner, repo, pr)
+    head_sha = pull["head"]["sha"]
+    token = await auth.installation_token(inst)
+
+    async with checkout(owner, repo, head_sha, token) as repo_root:
+        verdict = await recheck(
+            repo_root=repo_root,
+            tools=repo_tools(repo_root),
+            file_path=root["path"],
+            line=root.get("line") or root.get("original_line"),
+            finding_body=root.get("body") or "",
+            objection=objection,
+        )
+
+    conceded = verdict.outcome == "concede"
+    prefix = "**Withdrawn.**" if conceded else "**Still stands.**"
+    await client.reply_to_review_comment(
+        inst, owner, repo, pr, root_id, f"{prefix} {verdict.reasoning}"
+    )
+
+    if conceded:
+        # Resolving is the concession made durable: the thread collapses, and
+        # a later run reading threads back can see it was settled. REST cannot
+        # do this, which is the only reason there is any GraphQL here.
+        try:
+            thread = await client.find_review_thread(inst, owner, repo, pr, root_id)
+            if thread and not thread["isResolved"]:
+                await client.resolve_review_thread(inst, thread["id"])
+        except client.GitHubError as exc:
+            # The reply already posted, so the human has their answer. A failed
+            # resolve leaves the thread open — untidy, not wrong.
+            log.warning("could not resolve thread for comment %s: %s", root_id, exc)
+
+    log.info(
+        "dispute %s/%s#%s by @%s on %s: %s",
+        owner, repo, pr, job["requested_by"], root["path"], verdict.outcome,
+    )
+
+
+HANDLERS = {"review": handle_review, "dispute": handle_dispute}
+
+
+# ----------------------------------------------------------------- loop -----
+async def run_job(job: asyncpg.Record) -> None:
+    intent = job["intent"]
+    label = f"job {job['id']} ({intent} {job['owner']}/{job['repo']}#{job['pr_number']})"
+    try:
+        async with locks.pr_lock(job["owner"], job["repo"], job["pr_number"]):
+            await HANDLERS[intent](job)
+        await db.finish_job(job["id"])
+        log.info("%s done", label)
+    except locks.LockBusy as exc:
+        # Not a failure. Another worker has this PR; put it back and let it be
+        # picked up once that one finishes.
+        log.info("%s deferred: %s", label, exc)
+        await db.finish_job(job["id"], error=f"deferred: {exc}")
+    except Exception as exc:  # one bad job must not kill the loop
+        log.exception("%s failed", label)
+        await db.finish_job(job["id"], error=f"{type(exc).__name__}: {exc}")
+
+
+async def main() -> None:
+    problems = config.check()
+    if problems:
+        log.error("configuration incomplete: %s", "; ".join(problems))
+        log.error("run: .venv/bin/python scripts/preflight.py")
+        return
+
+    log.info(
+        "worker %s up — postgres=%s redis=%s",
+        config.WORKER_ID,
+        config.DATABASE_URL.split("@")[-1],
+        config.REDIS_URL,
+    )
+    await db.pool()
+
+    idle_logged = False
+    while not _stop.is_set():
+        try:
+            job = await db.claim_job(config.WORKER_ID)
+        except Exception:  # Postgres restarting, say
+            log.exception("could not claim a job; retrying")
+            await asyncio.sleep(5)
+            continue
+
+        if job is None:
+            if not idle_logged:
+                log.info("waiting for jobs")
+                idle_logged = True
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(_stop.wait(), timeout=config.POLL_INTERVAL_SECONDS)
+            continue
+
+        idle_logged = False
+        await run_job(job)
+
+    log.info("worker stopping")
+    await db.close()
+    await locks.close()
+
+
+def _install_signal_handlers(loop: asyncio.AbstractEventLoop) -> None:
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        with contextlib.suppress(NotImplementedError):
+            loop.add_signal_handler(sig, _stop.set)
+
+
+if __name__ == "__main__":
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    _install_signal_handlers(loop)
+    with contextlib.suppress(KeyboardInterrupt):
+        loop.run_until_complete(main())

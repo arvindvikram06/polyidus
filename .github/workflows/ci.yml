@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel an in-flight run when the same branch is pushed again — a superseded
+# run tells you nothing and costs minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uvx ruff check .
+      # Formatting is reported but not enforced: adopting `ruff format` would
+      # reflow the whole codebase in one commit. Turn `--check` into a gate
+      # once you have actually run the formatter.
+      - run: uvx ruff format --check --diff .
+        continue-on-error: true
+
+  types:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --extra dev
+      # Non-blocking on purpose. This codebase has never been type-checked, so
+      # a gate here would be red from the first run and get ignored, which is
+      # worse than no gate. Make it blocking once the count reaches zero.
+      - run: uv run mypy
+        continue-on-error: true
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The full range `requires-python = ">=3.10"` claims. Verified to
+        # resolve on all four before this workflow was added.
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python }}
+      - run: uv sync --extra dev
+      - run: uv run pytest -q
+
+  # The check the audit was missing: prove the built wheel actually works in a
+  # clean environment. Every dependency this package imports but does not
+  # declare passes locally and fails here — which is exactly how `fastmcp` and
+  # `rich` went unnoticed.
+  wheel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: "3.12"
+      - name: Build
+        run: uv build
+      - name: Install the wheel into an empty venv
+        run: |
+          uv venv /tmp/clean
+          # With the [bot] extra: `import bot.api` needs FastAPI, which is
+          # not a base dependency. Installing without it passed this job
+          # while leaving the service unimportable.
+          uv pip install --python /tmp/clean/bin/python "$(ls dist/*.whl)[bot]"
+      - name: Entry points import and run
+        run: |
+          /tmp/clean/bin/reviewer --help
+          /tmp/clean/bin/python -c "import bot.api, bot.worker, legacy.reviewer_cli.cli"
+      - name: Prompt files are present in the wheel
+        # Guards the failure mode found in the audit: the prompts were staged at
+        # a path nothing reads, so the package would have shipped with zero
+        # specialists and failed only at review time.
+        #
+        # The shared rules are checked for the same reason and one more: a
+        # specialist running without the severity rubric does not error, it just
+        # invents its own scale — which shows up as inconsistent severities on a
+        # real pull request rather than as anything anyone would notice.
+        run: |
+          /tmp/clean/bin/python -c "
+          from reviewer.agents.catalog import load_specialists
+          from reviewer.agents.subagents.rules import shared_rules
+          from reviewer.sandbox import files  # the sandbox must ship too
+          s = load_specialists()
+          assert len(s) == 4, f'expected 4 specialists in the wheel, got {len(s)}: {sorted(s)}'
+          rules = shared_rules()
+          for word in ('critical', 'high', 'medium', 'low', 'info'):
+              assert word in rules, f'severity rubric is missing {word!r}'
+          print('specialists shipped:', ', '.join(sorted(s)))
+          print(f'shared rules shipped: {len(rules)} chars')
+          "

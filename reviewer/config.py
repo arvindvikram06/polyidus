@@ -10,7 +10,7 @@ DEFAULT_API_KEY = os.environ.get("REVIEWER_API_KEY")
 MASTER_DISPATCH_CAP = int(os.environ.get("REVIEWER_MASTER_DISPATCH_CAP", "3"))
 
 # Tool calls (grep/read_file/list_dir) a single specialist may make.
-SUBAGENT_TOOL_ITERATION_CAP = int(os.environ.get("REVIEWER_SUBAGENT_TOOL_ITERATION_CAP", "50"))
+SUBAGENT_TOOL_ITERATION_CAP = int(os.environ.get("REVIEWER_SUBAGENT_TOOL_ITERATION_CAP", "70"))
 
 # Tasks accepted in one batch, and how many of them run concurrently.
 MAX_TASKS_PER_BATCH = int(os.environ.get("REVIEWER_MAX_TASKS_PER_BATCH", "50"))
@@ -18,6 +18,13 @@ MAX_FANOUT = int(os.environ.get("REVIEWER_MAX_FANOUT", "4"))
 
 MAX_DIFF_INPUT_TOKENS = int(os.environ.get("REVIEWER_MAX_DIFF_INPUT_TOKENS", "200000"))
 
-# Specialists read the repository through this MCP server; the orchestrator's
-# dispatch tool stays native in-process.
-FS_MCP_URL = os.environ.get("REVIEWER_FS_MCP_URL", "http://127.0.0.1:8000/mcp")
+# Place findings using the line number the model counted, instead of searching
+# the checkout for the line it quoted. This is how Oswald does it — its skill
+# tells the model to count line breaks from the diff header and then asks it to
+# check its own arithmetic, with no verification in code.
+#
+# Off by default. Turn it on to measure the difference:
+#   REVIEWER_TRUST_MODEL_LINE_NUMBERS=1
+TRUST_MODEL_LINE_NUMBERS = os.environ.get(
+    "REVIEWER_TRUST_MODEL_LINE_NUMBERS", ""
+).strip().lower() in {"1", "true", "yes"}

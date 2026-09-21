@@ -1,0 +1,482 @@
+<title>Counting vs Quoting</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&display=swap">
+
+<style>
+:root {
+  --ground:#F1F3F1; --surface:#FFFFFF; --sunk:#E7EAE8;
+  --ink:#16211E; --muted:#5E6B68; --faint:#8A9591; --rule:#D2DAD7;
+  --right:#2F6F62; --wrong:#B03A2E; --unsure:#8A9591; --human:#7B3F5E; --brass:#8A6D22;
+  --right-wash:#E4EFEC; --wrong-wash:#F7E6E3; --unsure-wash:#ECEFEE; --human-wash:#F3E8EE;
+  --serif:"Newsreader",Georgia,serif;
+  --sans:"IBM Plex Sans",system-ui,-apple-system,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ground:#11171A; --surface:#192126; --sunk:#1E282D;
+    --ink:#E3EAE7; --muted:#9AA8A4; --faint:#6D7B78; --rule:#2C373C;
+    --right:#5FB9A5; --wrong:#E8705C; --unsure:#7E8C88; --human:#D98BAF; --brass:#C9A94E;
+    --right-wash:#17322D; --wrong-wash:#3A211D; --unsure-wash:#222B2F; --human-wash:#34202B;
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#11171A; --surface:#192126; --sunk:#1E282D;
+  --ink:#E3EAE7; --muted:#9AA8A4; --faint:#6D7B78; --rule:#2C373C;
+  --right:#5FB9A5; --wrong:#E8705C; --unsure:#7E8C88; --human:#D98BAF; --brass:#C9A94E;
+  --right-wash:#17322D; --wrong-wash:#3A211D; --unsure-wash:#222B2F; --human-wash:#34202B;
+}
+
+body{background:var(--ground);color:var(--ink);font-family:var(--sans);
+  font-size:17px;line-height:1.65;margin:0;padding:0 1.25rem 6rem;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1000px;margin:0 auto}
+.col{max-width:62ch}
+
+header.masthead{border-bottom:2px solid var(--ink);padding:3.5rem 0 1.5rem;margin-bottom:2.5rem}
+.eyebrow{font-family:var(--mono);font-size:.7rem;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--muted);margin:0 0 1.1rem}
+h1{font-family:var(--serif);font-weight:500;font-size:clamp(2.6rem,7vw,4rem);line-height:1.02;
+  letter-spacing:-.02em;margin:0 0 1rem;text-wrap:balance}
+.standfirst{font-family:var(--serif);font-size:clamp(1.1rem,2.3vw,1.34rem);line-height:1.5;
+  color:var(--muted);max-width:52ch;margin:0}
+
+h2{font-family:var(--serif);font-weight:600;font-size:1.9rem;line-height:1.15;
+  letter-spacing:-.01em;margin:0 0 .35rem;text-wrap:balance}
+h3{font-family:var(--sans);font-weight:600;font-size:1.05rem;margin:2rem 0 .5rem}
+p{margin:0 0 1.05rem}
+code,.mono{font-family:var(--mono);font-size:.86em}
+p code,li code,td code{background:var(--sunk);padding:.1em .34em;border-radius:3px}
+.lede{font-family:var(--serif);font-size:1.2rem;line-height:1.55}
+ul,ol{margin:0 0 1.05rem;padding-left:1.2rem}
+li{margin-bottom:.45rem}
+section{margin-bottom:4.5rem}
+
+.step-head{display:flex;align-items:baseline;gap:1rem;border-top:1px solid var(--rule);
+  padding-top:1.1rem;margin-bottom:1.4rem}
+.step-num{font-family:var(--mono);font-size:.78rem;font-weight:500;letter-spacing:.1em;
+  color:var(--right);white-space:nowrap;padding-top:.45rem}
+.step-head h2{margin-bottom:.2rem}
+.step-sub{font-family:var(--mono);font-size:.74rem;letter-spacing:.06em;color:var(--faint);
+  text-transform:uppercase}
+
+.callout{background:var(--sunk);border:1px solid var(--rule);border-radius:4px;
+  padding:1.1rem 1.25rem;margin:1.75rem 0;max-width:62ch}
+.callout.warn{background:var(--wrong-wash);border-color:var(--wrong)}
+.callout.good{background:var(--right-wash);border-color:var(--right)}
+.callout>.tag{display:block;font-family:var(--mono);font-size:.68rem;letter-spacing:.13em;
+  text-transform:uppercase;margin-bottom:.5rem;color:var(--muted)}
+.callout.warn>.tag{color:var(--wrong)}
+.callout.good>.tag{color:var(--right)}
+.callout p:last-child{margin-bottom:0}
+
+figure{margin:2.25rem 0;background:var(--surface);border:1px solid var(--rule);border-radius:5px;
+  padding:1.5rem 1.25rem 1.1rem;overflow-x:auto}
+figure svg{display:block;width:100%;min-width:560px;height:auto;color:var(--ink)}
+figcaption{font-size:.83rem;line-height:1.5;color:var(--muted);margin-top:1.1rem;
+  padding-top:.85rem;border-top:1px solid var(--rule);max-width:70ch}
+
+.node{fill:var(--surface);stroke:var(--rule);stroke-width:1.4}
+.node.r{stroke:var(--right);fill:var(--right-wash)}
+.node.w{stroke:var(--wrong);fill:var(--wrong-wash)}
+.node.u{stroke:var(--unsure);fill:var(--unsure-wash);stroke-dasharray:4 4}
+.node.h{stroke:var(--human);fill:var(--human-wash)}
+.node.code{fill:var(--sunk);stroke:var(--rule)}
+.node.ghost{fill:none;stroke:var(--rule);stroke-dasharray:4 4}
+.t{font-family:var(--sans);font-size:12.5px;font-weight:500;fill:var(--ink)}
+.ts{font-family:var(--sans);font-size:10.5px;fill:var(--muted)}
+.tm{font-family:var(--mono);font-size:11px;fill:var(--ink)}
+.tms{font-family:var(--mono);font-size:9.5px;fill:var(--muted)}
+.al{font-family:var(--mono);font-size:9.5px;fill:var(--muted)}
+.hd{font-family:var(--mono);font-size:10px;fill:var(--faint);letter-spacing:.1em}
+.big{font-family:var(--serif);font-size:26px;font-weight:600}
+.ok{fill:var(--right)} .bad{fill:var(--wrong)} .dim{fill:var(--faint)}
+.ln{stroke:var(--ink);stroke-width:1.3;fill:none}
+.ln.thin{stroke:var(--rule)}
+.ln.dash{stroke-dasharray:4 4;stroke:var(--faint)}
+.ln.bad{stroke:var(--wrong);stroke-width:1.6}
+.ln.ok{stroke:var(--right);stroke-width:1.6}
+
+.tablewrap{overflow-x:auto;margin:1.75rem 0}
+table{border-collapse:collapse;width:100%;min-width:540px;font-size:.88rem}
+th,td{text-align:left;padding:.6rem .9rem .6rem 0;border-bottom:1px solid var(--rule);vertical-align:top}
+th{font-family:var(--mono);font-size:.7rem;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--muted);font-weight:500;border-bottom-color:var(--ink)}
+td.v{white-space:nowrap;font-weight:600}
+.vr{color:var(--right)} .vw{color:var(--wrong)} .vu{color:var(--brass)}
+td.mono{font-family:var(--mono);font-size:.8rem;white-space:nowrap}
+
+pre{background:var(--surface);border:1px solid var(--rule);border-radius:4px;
+  padding:.9rem 1.1rem;overflow-x:auto;font-family:var(--mono);font-size:.8rem;
+  line-height:1.6;margin:1.5rem 0}
+pre .g{color:var(--muted)}
+pre .r{color:var(--wrong);font-weight:500}
+pre .k{color:var(--right);font-weight:500}
+
+footer{border-top:2px solid var(--ink);padding-top:1.2rem;margin-top:4rem;
+  font-size:.82rem;color:var(--muted);max-width:62ch}
+@media(max-width:620px){.step-head{flex-direction:column;gap:.15rem}.step-num{padding-top:0}}
+</style>
+
+<div class="wrap">
+
+<header class="masthead">
+  <p class="eyebrow">Reviewer bot · experiment result</p>
+  <h1>Counting vs Quoting</h1>
+  <p class="standfirst">Two ways to decide which line a comment belongs on. We ran both on the same pull request. One posted more comments. The other posted no wrong ones.</p>
+</header>
+
+<!-- ===================================================== THE QUESTION == -->
+<section>
+  <div class="col">
+    <p class="lede">Everything here comes down to one small question.</p>
+    <p>The bot finds a problem. To leave a comment <em>on the line</em>, it has to tell GitHub a number: "put this on line 75."</p>
+    <p>Where does that number come from? There are only two ways to get it, and that choice is the entire argument.</p>
+  </div>
+
+  <figure>
+    <svg viewBox="0 0 760 250" role="img" aria-label="The bot finds a problem and must supply a line number to GitHub. Two routes: count the lines in the diff, or quote the line and search the file for it.">
+      <defs><marker id="q1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker></defs>
+
+      <rect class="node" x="280" y="20" width="200" height="54" rx="4"/>
+      <text class="t"  x="380" y="43" text-anchor="middle">the bot finds a problem</text>
+      <text class="ts" x="380" y="61" text-anchor="middle">"SaveChangesAsync is in a loop"</text>
+
+      <line class="ln" x1="380" y1="74" x2="380" y2="102" marker-end="url(#q1)"/>
+
+      <rect class="node h" x="255" y="104" width="250" height="46" rx="4"/>
+      <text class="t" x="380" y="125" text-anchor="middle">GitHub asks: which line?</text>
+      <text class="ts" x="380" y="141" text-anchor="middle">it needs a number, nothing else will do</text>
+
+      <line class="ln" x1="320" y1="150" x2="200" y2="188" marker-end="url(#q1)"/>
+      <line class="ln" x1="440" y1="150" x2="560" y2="188" marker-end="url(#q1)"/>
+
+      <rect class="node w" x="40" y="190" width="290" height="50" rx="4"/>
+      <text class="t"  x="56" y="211">Way 1 · COUNT it</text>
+      <text class="ts" x="56" y="229">the model works the number out in its head</text>
+
+      <rect class="node r" x="430" y="190" width="290" height="50" rx="4"/>
+      <text class="t"  x="446" y="211">Way 2 · QUOTE it</text>
+      <text class="ts" x="446" y="229">the model copies the line, we go find it</text>
+    </svg>
+    <figcaption>Oswald takes Way 1. This project takes Way 2. That is the only difference being tested here — everything else about the review is identical.</figcaption>
+  </figure>
+</section>
+
+<!-- ======================================================= WAY ONE ===== -->
+<section>
+  <div class="step-head">
+    <span class="step-num">WAY 1</span>
+    <div>
+      <h2>Counting — what Oswald does</h2>
+      <p class="step-sub">the model does arithmetic in its head</p>
+    </div>
+  </div>
+
+  <div class="col">
+    <p>The model is shown the diff. A diff starts with a header like <code>@@ -0,0 +1,98 @@</code>, which means <em>"in the new file, this chunk starts at line 1"</em>.</p>
+    <p>From there the model must count every single line break to reach the problem. Blank lines count. Every line of a long string counts. Miss one and every number after it is wrong.</p>
+    <p>Then it reports a number, and that number is used. <strong>Nothing checks it.</strong></p>
+  </div>
+
+  <figure>
+    <svg viewBox="0 0 780 260" role="img" aria-label="The model reads the diff header, counts line breaks in its head, and outputs a number which is used directly with no verification step.">
+      <defs><marker id="q2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker></defs>
+
+      <rect class="node code" x="20" y="40" width="190" height="80" rx="4"/>
+      <text class="tms" x="34" y="62">@@ -0,0 +1,98 @@</text>
+      <text class="tms" x="34" y="80">+using Microsoft...</text>
+      <text class="tms" x="34" y="96">+</text>
+      <text class="tms" x="34" y="112">+namespace OrderApi...</text>
+      <text class="al" x="115" y="136" text-anchor="middle">the diff</text>
+
+      <line class="ln" x1="210" y1="80" x2="252" y2="80" marker-end="url(#q2)"/>
+
+      <rect class="node w" x="260" y="36" width="210" height="88" rx="4"/>
+      <text class="t"  x="365" y="60" text-anchor="middle">the model counts</text>
+      <text class="ts" x="365" y="80" text-anchor="middle">"starts at 1… 2, 3, 4 …</text>
+      <text class="ts" x="365" y="96" text-anchor="middle">that blank one counts too…"</text>
+      <text class="ts" x="365" y="114" text-anchor="middle">all in its head</text>
+
+      <line class="ln" x1="470" y1="80" x2="512" y2="80" marker-end="url(#q2)"/>
+
+      <rect class="node w" x="520" y="52" width="140" height="56" rx="4"/>
+      <text class="big bad" x="590" y="88" text-anchor="middle">line 74</text>
+
+      <line class="ln" x1="660" y1="80" x2="702" y2="80" marker-end="url(#q2)"/>
+      <text class="t" x="712" y="76">post</text>
+      <text class="t" x="712" y="92">it</text>
+
+      <rect class="node ghost" x="260" y="160" width="400" height="66" rx="4"/>
+      <text class="hd" x="278" y="182">WHAT CHECKS THAT NUMBER</text>
+      <text class="big dim" x="460" y="212" text-anchor="middle">nothing</text>
+    </svg>
+    <figcaption>Oswald's skill file adds a "mental check" step — it asks the model to re-read its own answer. That is still the model checking the model. No code ever opens the file to see what is on line 74.</figcaption>
+  </figure>
+</section>
+
+<!-- ======================================================= WAY TWO ===== -->
+<section>
+  <div class="step-head">
+    <span class="step-num">WAY 2</span>
+    <div>
+      <h2>Quoting — what this project does</h2>
+      <p class="step-sub">the model copies, the code searches</p>
+    </div>
+  </div>
+
+  <div class="col">
+    <p>The model is not asked for a number. It is asked to <strong>copy the bad line, exactly as written</strong>.</p>
+    <p>Then our code opens the real file and searches for that text. Wherever it appears, that is the line. No arithmetic, no guessing.</p>
+    <p>The idea behind it is simple: <em>copying is easy, counting is hard</em>. Models are good at copying and bad at counting.</p>
+  </div>
+
+  <figure>
+    <svg viewBox="0 0 780 260" role="img" aria-label="The model copies the offending line of source; our code opens the real checked-out file, searches for that exact text, finds it once at line 75, and uses that verified number.">
+      <defs><marker id="q3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker></defs>
+
+      <rect class="node r" x="20" y="40" width="240" height="80" rx="4"/>
+      <text class="t"  x="34" y="62">the model copies the line</text>
+      <text class="tms" x="34" y="84">await _unitOfWork</text>
+      <text class="tms" x="34" y="100">  .SaveChangesAsync(...)</text>
+      <text class="al" x="34" y="116">no number, just the text</text>
+
+      <line class="ln" x1="260" y1="80" x2="300" y2="80" marker-end="url(#q3)"/>
+
+      <rect class="node r" x="308" y="36" width="200" height="88" rx="4"/>
+      <text class="t"  x="408" y="60" text-anchor="middle">our code searches</text>
+      <text class="ts" x="408" y="80" text-anchor="middle">opens the real file</text>
+      <text class="ts" x="408" y="96" text-anchor="middle">from the checkout and</text>
+      <text class="ts" x="408" y="112" text-anchor="middle">looks for that exact text</text>
+
+      <line class="ln" x1="508" y1="80" x2="548" y2="80" marker-end="url(#q3)"/>
+
+      <rect class="node r" x="556" y="52" width="140" height="56" rx="4"/>
+      <text class="big ok" x="626" y="88" text-anchor="middle">line 75</text>
+
+      <rect class="node ghost" x="308" y="160" width="388" height="66" rx="4"/>
+      <text class="hd" x="326" y="182">AND IF THE TEXT IS NOT FOUND?</text>
+      <text class="t" x="326" y="208">we say so, and attach it to the file instead</text>
+    </svg>
+    <figcaption>That last box is the part that looked like a flaw. A finding whose quote cannot be found gets attached to the file rather than a line — the ugly "file-level" comment that sits at the top. It is the system refusing to guess.</figcaption>
+  </figure>
+</section>
+
+<!-- ==================================================== THE TEST ======= -->
+<section>
+  <div class="step-head">
+    <span class="step-num">THE TEST</span>
+    <div>
+      <h2>Same pull request, both ways</h2>
+      <p class="step-sub">then every line number checked by hand</p>
+    </div>
+  </div>
+
+  <div class="col">
+    <p>We ran the bot in Oswald mode on <code>test-proj#1</code>. It posted <strong>10 comments, all neatly on lines</strong>. No ugly file-level ones. It looked like a clear win.</p>
+    <p>Then we downloaded the actual file and checked what is really on each of those lines.</p>
+  </div>
+
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Finding</th><th>Posted on</th><th>What is really there</th><th>Verdict</th></tr></thead>
+      <tbody>
+        <tr><td>Hardcoded credentials</td><td class="mono">16–17</td><td>the two <code>const</code> secrets</td><td class="v vr">correct</td></tr>
+        <tr><td>SQL injection</td><td class="mono">55–59</td><td>the SQL string concat</td><td class="v vr">correct</td></tr>
+        <tr><td>Empty catch block</td><td class="mono">77–80</td><td>the <code>catch</code> block</td><td class="v vr">correct</td></tr>
+        <tr><td>Unbounded collection</td><td class="mono">11</td><td><code>BulkImportRequest</code></td><td class="v vr">correct</td></tr>
+        <tr><td>GET not authorised</td><td class="mono">31–36</td><td><code>GetSupplierProducts</code></td><td class="v vr">correct</td></tr>
+        <tr><td>Redundant SupplierCode</td><td class="mono">7–9</td><td>the DTO fields</td><td class="v vr">correct</td></tr>
+        <tr><td>No transaction scope</td><td class="mono">54–80</td><td>starts mid-block, not at the loop</td><td class="v vu">sloppy</td></tr>
+        <tr><td><strong>Credentials logged</strong></td><td class="mono">40–42</td><td><code>var created = 0;</code> …</td><td class="v vw">WRONG</td></tr>
+        <tr><td><strong>SaveChangesAsync N+1</strong></td><td class="mono">74</td><td>a blank line</td><td class="v vw">WRONG</td></tr>
+        <tr><td><strong>Missing SupplierCode</strong></td><td class="mono">68–78</td><td>the wrong branch of the <code>if</code></td><td class="v vw">WRONG</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <figure>
+    <svg viewBox="0 0 760 210" role="img" aria-label="Ten comments posted by Oswald mode: six correct, one sloppy, three wrong. Three of ten point at the wrong code.">
+      <text class="hd" x="20" y="18">OSWALD MODE — 10 COMMENTS POSTED</text>
+
+      <rect class="node r" x="20"  y="30" width="66" height="54" rx="4"/><text class="t ok" x="53" y="62" text-anchor="middle">✓</text>
+      <rect class="node r" x="92"  y="30" width="66" height="54" rx="4"/><text class="t ok" x="125" y="62" text-anchor="middle">✓</text>
+      <rect class="node r" x="164" y="30" width="66" height="54" rx="4"/><text class="t ok" x="197" y="62" text-anchor="middle">✓</text>
+      <rect class="node r" x="236" y="30" width="66" height="54" rx="4"/><text class="t ok" x="269" y="62" text-anchor="middle">✓</text>
+      <rect class="node r" x="308" y="30" width="66" height="54" rx="4"/><text class="t ok" x="341" y="62" text-anchor="middle">✓</text>
+      <rect class="node r" x="380" y="30" width="66" height="54" rx="4"/><text class="t ok" x="413" y="62" text-anchor="middle">✓</text>
+      <rect class="node u" x="452" y="30" width="66" height="54" rx="4"/><text class="t dim" x="485" y="62" text-anchor="middle">~</text>
+      <rect class="node w" x="524" y="30" width="66" height="54" rx="4"/><text class="t bad" x="557" y="62" text-anchor="middle">✗</text>
+      <rect class="node w" x="596" y="30" width="66" height="54" rx="4"/><text class="t bad" x="629" y="62" text-anchor="middle">✗</text>
+      <rect class="node w" x="668" y="30" width="66" height="54" rx="4"/><text class="t bad" x="701" y="62" text-anchor="middle">✗</text>
+
+      <text class="ts" x="20" y="104">Every one of these ten looks identical on the page. Same format, same confidence,</text>
+      <text class="ts" x="20" y="120">same bot avatar. Nothing marks the last three.</text>
+
+      <line class="ln thin" x1="20" y1="140" x2="740" y2="140"/>
+
+      <text class="hd" x="20" y="166">QUOTE MODE — SAME PULL REQUEST</text>
+      <rect class="node r" x="20"  y="176" width="66" height="26" rx="4"/><text class="t ok" x="53" y="194" text-anchor="middle">✓</text>
+      <rect class="node r" x="92"  y="176" width="66" height="26" rx="4"/><text class="t ok" x="125" y="194" text-anchor="middle">✓</text>
+      <rect class="node r" x="164" y="176" width="66" height="26" rx="4"/><text class="t ok" x="197" y="194" text-anchor="middle">✓</text>
+      <rect class="node u" x="236" y="176" width="66" height="26" rx="4"/><text class="tms dim" x="269" y="194" text-anchor="middle">?</text>
+      <rect class="node u" x="308" y="176" width="66" height="26" rx="4"/><text class="tms dim" x="341" y="194" text-anchor="middle">?</text>
+      <rect class="node u" x="380" y="176" width="66" height="26" rx="4"/><text class="tms dim" x="413" y="194" text-anchor="middle">?</text>
+      <text class="ts" x="460" y="194">3 correct, 3 that said "I could not place this". Zero wrong.</text>
+    </svg>
+    <figcaption>The "?" boxes are the file-level comments that looked like a failure. They are the system telling you it does not know — which is information. A wrong line number is not.</figcaption>
+  </figure>
+</section>
+
+<!-- ================================================== HEAD TO HEAD ===== -->
+<section>
+  <div class="step-head">
+    <span class="step-num">PROOF</span>
+    <div>
+      <h2>One finding, both ways</h2>
+      <p class="step-sub">the clearest single comparison we have</p>
+    </div>
+  </div>
+
+  <div class="col">
+    <p>Both modes found the same problem: <em>"SaveChangesAsync is being called inside a loop."</em> Same pull request, same file.</p>
+    <p>Here is the actual code, and where each mode put its comment.</p>
+  </div>
+
+  <figure>
+    <svg viewBox="0 0 780 230" role="img" aria-label="Real source lines 72 to 76. Oswald mode placed its comment on line 74, which is blank. Quote mode placed the same comment on line 75, the actual SaveChangesAsync call.">
+      <defs><marker id="q4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker></defs>
+
+      <text class="hd" x="20" y="18">ProductImportService.cs — THE REAL FILE</text>
+
+      <rect class="node code" x="20" y="28" width="470" height="24"/>
+      <text class="tms" x="32" y="45">72                    updated++;</text>
+      <rect class="node code" x="20" y="52" width="470" height="24"/>
+      <text class="tms" x="32" y="69">73                }</text>
+
+      <rect class="node w" x="20" y="76" width="470" height="24"/>
+      <text class="tms" x="32" y="93">74</text>
+      <text class="tms bad" x="150" y="93">← nothing here. It is an empty line.</text>
+
+      <rect class="node r" x="20" y="100" width="470" height="24"/>
+      <text class="tms" x="32" y="117">75                await _unitOfWork.SaveChangesAsync(...)</text>
+
+      <rect class="node code" x="20" y="124" width="470" height="24"/>
+      <text class="tms" x="32" y="141">76            }</text>
+
+      <line class="ln bad" x1="600" y1="66" x2="496" y2="86" marker-end="url(#q4)"/>
+      <rect class="node w" x="604" y="44" width="160" height="44" rx="4"/>
+      <text class="t" x="618" y="63">Oswald mode</text>
+      <text class="tms bad" x="618" y="79">counted → 74</text>
+
+      <line class="ln ok" x1="600" y1="136" x2="496" y2="118" marker-end="url(#q4)"/>
+      <rect class="node r" x="604" y="114" width="160" height="44" rx="4"/>
+      <text class="t" x="618" y="133">Quote mode</text>
+      <text class="tms ok" x="618" y="149">searched → 75</text>
+
+      <text class="ts" x="20" y="180">Off by one. The comment points at a blank line, one above the code it is about.</text>
+      <text class="ts" x="20" y="200">On a page of 98 lines, nobody scrolling past would ever notice.</text>
+    </svg>
+    <figcaption>This is the whole argument in five lines of code. The model's count was nearly right — and nearly right is wrong.</figcaption>
+  </figure>
+
+  <div class="callout warn">
+    <span class="tag">The worst one</span>
+    <p>The finding <strong>"Credentials logged in plaintext"</strong> was posted on lines 40–42:</p>
+    <p><code>var created = 0;</code> &nbsp; <code>var updated = 0;</code> &nbsp; <code>var failed = 0;</code></p>
+    <p>Three counters. The code that actually leaks the password is at lines 36–38. So the comment accuses three harmless lines of logging secrets, and the real offender has no comment on it at all.</p>
+  </div>
+</section>
+
+<!-- ================================================== WHY IT FOOLS ===== -->
+<section>
+  <div class="step-head">
+    <span class="step-num">THE TRAP</span>
+    <div>
+      <h2>Why 10 looks better than 6</h2>
+      <p class="step-sub">and why it isn't</p>
+    </div>
+  </div>
+
+  <div class="col">
+    <p>Your instinct was reasonable. Ten tidy inline comments <em>look</em> like a better review than six with three of them dumped at the top of the file. Anyone would think that.</p>
+    <p>Here is the thing that flips it.</p>
+  </div>
+
+  <div class="callout">
+    <span class="tag">The point of a line comment</span>
+    <p>The <strong>only</strong> reason to attach a comment to a line is so the reader does not have to hunt for the problem. That is the entire value.</p>
+    <p>If three in ten point at the wrong place — and you cannot tell which three — then you have to verify all ten by hand. The comments have stopped saving you anything. They now cost you time.</p>
+  </div>
+
+  <div class="col">
+    <p>Think of a proofreader. One hands back your essay with ten red circles, three of them around perfectly good sentences, and won't say which. The other circles six, and writes "something's off in this paragraph, I can't pin it down" three times.</p>
+    <p>The second one is more work to look at. It is also the only one you can trust.</p>
+  </div>
+
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th></th><th>Oswald mode</th><th>Quote mode</th></tr></thead>
+      <tbody>
+        <tr><td>Comments on a line</td><td>10</td><td>3</td></tr>
+        <tr><td>Correct</td><td>6</td><td class="vr"><strong>3</strong></td></tr>
+        <tr><td>Sloppy but usable</td><td>1</td><td>0</td></tr>
+        <tr><td><strong>Wrong</strong></td><td class="vw"><strong>3</strong></td><td class="vr"><strong>0</strong></td></tr>
+        <tr><td>Said "I don't know"</td><td>0</td><td>3</td></tr>
+        <tr><td>Can you spot the wrong ones?</td><td class="vw"><strong>no</strong></td><td>—</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout good">
+    <span class="tag">The finding</span>
+    <p><strong>Oswald mode gets 30% of its line numbers wrong, silently.</strong></p>
+    <p>We only found that by downloading the file and counting by hand — which is exactly the work the comments were supposed to remove.</p>
+  </div>
+</section>
+
+<!-- ===================================================== WHAT NOW ====== -->
+<section>
+  <div class="step-head">
+    <span class="step-num">NEXT</span>
+    <div>
+      <h2>What to do about it</h2>
+      <p class="step-sub">quote mode has two real gaps — both fixable</p>
+    </div>
+  </div>
+
+  <div class="col">
+    <p>Quote mode is not perfect. Six of ten findings failed to get a line, for two specific reasons. Both are small and fixable, and neither requires giving up the verification.</p>
+  </div>
+
+  <h3>Gap 1 — the model quoted something too short</h3>
+  <pre><span class="g">the model copied:</span>  <span class="r">"catch"</span>
+<span class="g">the problem:</span>       that word appears all over the file.
+                   Searching for it finds eight places. Which one?
+<span class="g">so we refused</span> — and the comment fell to file level.
+
+<span class="k">the fix:</span> tell the model that if the line is short or repeated,
+          quote two or three lines together. Our search already
+          handles multi-line quotes.</pre>
+
+  <h3>Gap 2 — the model changed the quotes while copying</h3>
+  <pre><span class="g">the file says:</span>     ... SupplierCode = <span class="k">'"</span> + supplierCode + <span class="k">"'</span> ...
+<span class="g">the model wrote:</span>   ... SupplierCode = <span class="r">'"</span> + supplierCode + <span class="r">“'</span> ...
+                                                     <span class="r">↑ curly quote</span>
+
+<span class="g">so the search found nothing</span> — the text does not match.
+
+<span class="k">the fix:</span> treat curly quotes as straight quotes before matching.
+          A few characters of code.</pre>
+
+  <div class="col">
+    <p>Fix those two and most of the six become real line comments. <strong>Still verified. Still zero wrong.</strong></p>
+    <p>The flag for Oswald mode is left in the code — <code>REVIEWER_TRUST_MODEL_LINE_NUMBERS=1</code> — so this can be re-run any time. It is off by default, and it warns loudly whenever it is on.</p>
+  </div>
+</section>
+
+<footer>
+  <p>Measured on <code>arvindvikram06/test-proj#1</code> at commit <code>b7d25fb4</code>. Every line number in the table was checked against the file fetched from GitHub at that commit, not estimated. Oswald's counting instructions are quoted from <code>apps/code-reviewer/src/agent/prompts/scmGuidelines.ts</code> and <code>prompts/skills/code-reviewer/SKILL.md</code>.</p>
+</footer>
+
+</div>
