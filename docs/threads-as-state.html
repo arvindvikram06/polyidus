@@ -1,0 +1,617 @@
+<title>Threads as State</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&display=swap">
+
+<style>
+:root {
+  --ground:   #F1F3F1;
+  --surface:  #FFFFFF;
+  --sunk:     #E7EAE8;
+  --ink:      #16211E;
+  --muted:    #5E6B68;
+  --faint:    #8A9591;
+  --rule:     #D2DAD7;
+  --machine:  #2F6F62;
+  --human:    #7B3F5E;
+  --memory:   #8A6D22;
+  --machine-wash: #E4EFEC;
+  --human-wash:   #F3E8EE;
+  --memory-wash:  #F2EDDD;
+
+  --serif: "Newsreader", Georgia, "Times New Roman", serif;
+  --sans:  "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono:  "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground:   #11171A;  --surface: #192126;  --sunk: #1E282D;
+    --ink:      #E3EAE7;  --muted:   #9AA8A4;  --faint: #6D7B78;
+    --rule:     #2C373C;
+    --machine:  #5FB9A5;  --human:   #D98BAF;  --memory: #C9A94E;
+    --machine-wash: #17322D; --human-wash: #34202B; --memory-wash: #2E2818;
+  }
+}
+:root[data-theme="dark"] {
+  --ground:   #11171A;  --surface: #192126;  --sunk: #1E282D;
+  --ink:      #E3EAE7;  --muted:   #9AA8A4;  --faint: #6D7B78;
+  --rule:     #2C373C;
+  --machine:  #5FB9A5;  --human:   #D98BAF;  --memory: #C9A94E;
+  --machine-wash: #17322D; --human-wash: #34202B; --memory-wash: #2E2818;
+}
+
+body {
+  background: var(--ground); color: var(--ink);
+  font-family: var(--sans); font-size: 16.5px; line-height: 1.62;
+  margin: 0; padding: 0 1.25rem 6rem; -webkit-font-smoothing: antialiased;
+}
+.wrap { max-width: 1000px; margin: 0 auto; }
+.col  { max-width: 64ch; }
+
+header.masthead { border-bottom: 2px solid var(--ink); padding: 3.5rem 0 1.5rem; margin-bottom: 2.5rem; }
+.eyebrow {
+  font-family: var(--mono); font-size: 0.7rem; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--muted); margin: 0 0 1.1rem;
+}
+h1 {
+  font-family: var(--serif); font-weight: 500;
+  font-size: clamp(2.6rem, 7vw, 4rem); line-height: 1.02;
+  letter-spacing: -0.02em; margin: 0 0 1rem; text-wrap: balance;
+}
+.standfirst {
+  font-family: var(--serif); font-size: clamp(1.1rem, 2.3vw, 1.32rem);
+  line-height: 1.5; color: var(--muted); max-width: 56ch; margin: 0;
+}
+
+h2 {
+  font-family: var(--serif); font-weight: 600; font-size: 1.85rem;
+  line-height: 1.15; letter-spacing: -0.01em; margin: 0 0 0.35rem; text-wrap: balance;
+}
+h3 { font-family: var(--sans); font-weight: 600; font-size: 1.02rem; margin: 2rem 0 0.5rem; }
+p { margin: 0 0 1.05rem; }
+a { color: var(--machine); text-underline-offset: 2px; }
+code, .mono { font-family: var(--mono); font-size: 0.86em; }
+p code, li code, td code { background: var(--sunk); padding: 0.1em 0.34em; border-radius: 3px; }
+.lede { font-family: var(--serif); font-size: 1.16rem; line-height: 1.55; }
+ul, ol { margin: 0 0 1.05rem; padding-left: 1.2rem; }
+li { margin-bottom: 0.4rem; }
+section { margin-bottom: 4.5rem; }
+
+.step-head {
+  display: flex; align-items: baseline; gap: 1rem;
+  border-top: 1px solid var(--rule); padding-top: 1.1rem; margin-bottom: 1.4rem;
+}
+.step-num {
+  font-family: var(--mono); font-size: 0.78rem; font-weight: 500;
+  letter-spacing: 0.1em; color: var(--machine); white-space: nowrap; padding-top: 0.45rem;
+}
+.step-head h2 { margin-bottom: 0.2rem; }
+.step-sub {
+  font-family: var(--mono); font-size: 0.74rem; letter-spacing: 0.06em;
+  color: var(--faint); text-transform: uppercase;
+}
+
+.plain, .tech {
+  border-left: 2px solid var(--rule); padding: 0.15rem 0 0.15rem 1.15rem;
+  margin: 1.5rem 0; max-width: 64ch;
+}
+.plain { border-left-color: var(--human); }
+.tech  { border-left-color: var(--machine); }
+.plain > .tag, .tech > .tag, .callout > .tag {
+  display: block; font-family: var(--mono); font-size: 0.68rem;
+  letter-spacing: 0.13em; text-transform: uppercase; margin-bottom: 0.55rem;
+}
+.plain > .tag { color: var(--human); }
+.tech  > .tag { color: var(--machine); }
+.plain p:last-child, .tech p:last-child, .callout p:last-child { margin-bottom: 0; }
+
+.callout {
+  background: var(--memory-wash); border: 1px solid var(--rule);
+  border-radius: 4px; padding: 1.1rem 1.25rem; margin: 1.75rem 0; max-width: 64ch;
+}
+.callout > .tag { color: var(--memory); }
+
+figure {
+  margin: 2.25rem 0; background: var(--surface); border: 1px solid var(--rule);
+  border-radius: 5px; padding: 1.5rem 1.25rem 1.1rem; overflow-x: auto;
+}
+figure svg { display: block; width: 100%; min-width: 580px; height: auto; color: var(--ink); }
+figcaption {
+  font-size: 0.83rem; line-height: 1.5; color: var(--muted); margin-top: 1.1rem;
+  padding-top: 0.85rem; border-top: 1px solid var(--rule); max-width: 70ch;
+}
+
+.node    { fill: var(--surface); stroke: var(--rule); stroke-width: 1.4; }
+.node.m  { stroke: var(--machine); fill: var(--machine-wash); }
+.node.h  { stroke: var(--human);   fill: var(--human-wash); }
+.node.s  { stroke: var(--memory);  fill: var(--memory-wash); }
+.node.dead  { stroke: var(--faint); stroke-dasharray: 5 4; fill: none; }
+.node.ghost { fill: none; stroke: var(--rule); stroke-dasharray: 4 4; }
+.node.code  { fill: var(--sunk); stroke: var(--rule); }
+
+.t  { font-family: var(--sans); font-size: 12.5px; font-weight: 500; fill: var(--ink); }
+.ts { font-family: var(--sans); font-size: 10.5px; fill: var(--muted); }
+.tm { font-family: var(--mono); font-size: 11px; fill: var(--ink); }
+.tms{ font-family: var(--mono); font-size: 9.5px; fill: var(--muted); }
+.al { font-family: var(--mono); font-size: 9.5px; fill: var(--muted); }
+.hd { font-family: var(--mono); font-size: 10px; fill: var(--faint); letter-spacing: 0.1em; }
+.dim { fill: var(--faint); }
+.good { fill: var(--machine); }
+.bad  { fill: var(--human); }
+
+.ln { stroke: var(--ink); stroke-width: 1.3; fill: none; }
+.ln.thin  { stroke: var(--rule); }
+.ln.dash  { stroke-dasharray: 4 4; stroke: var(--faint); }
+.ln.faint { stroke: var(--faint); stroke-width: 1.1; stroke-dasharray: 5 4; }
+
+.tablewrap { overflow-x: auto; margin: 1.75rem 0; }
+table { border-collapse: collapse; width: 100%; min-width: 540px; font-size: 0.87rem; }
+th, td { text-align: left; padding: 0.6rem 0.9rem 0.6rem 0; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th {
+  font-family: var(--mono); font-size: 0.7rem; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--muted); font-weight: 500; border-bottom-color: var(--ink);
+}
+td.st { white-space: nowrap; font-family: var(--mono); font-size: 0.78rem; }
+.ok { color: var(--machine); } .gone { color: var(--human); } .todo { color: var(--faint); }
+
+pre {
+  background: var(--surface); border: 1px solid var(--rule); border-radius: 4px;
+  padding: 0.9rem 1.1rem; overflow-x: auto; font-family: var(--mono);
+  font-size: 0.79rem; line-height: 1.55; margin: 1.5rem 0;
+}
+pre .c { color: var(--muted); }
+
+.legend {
+  display: flex; flex-wrap: wrap; gap: 1.5rem; padding: 0.9rem 1.1rem;
+  background: var(--surface); border: 1px solid var(--rule); border-radius: 4px;
+  margin: 1.5rem 0 0; font-size: 0.83rem;
+}
+.legend div { display: flex; align-items: center; gap: 0.55rem; }
+.sw { width: 16px; height: 16px; border-radius: 3px; border: 1.5px solid; flex: none; }
+.sw.m { border-color: var(--machine); background: var(--machine-wash); }
+.sw.h { border-color: var(--human);   background: var(--human-wash); }
+.sw.s { border-color: var(--memory);  background: var(--memory-wash); }
+
+footer {
+  border-top: 2px solid var(--ink); padding-top: 1.2rem; margin-top: 4rem;
+  font-size: 0.82rem; color: var(--muted); max-width: 64ch;
+}
+@media (max-width: 620px) {
+  .step-head { flex-direction: column; gap: 0.15rem; }
+  .step-num { padding-top: 0; }
+}
+</style>
+
+<div class="wrap">
+
+<header class="masthead">
+  <p class="eyebrow">Reviewer bot · architecture · revised plan</p>
+  <h1>Threads as State</h1>
+  <p class="standfirst">Stop building a database that mirrors the pull request. Put every finding on the line it is about, and let GitHub hold the record — seven tables become two.</p>
+</header>
+
+<section>
+  <div class="col">
+    <p class="lede">We spent a week designing tables to remember what the bot said, which findings a human overruled, and how to address one finding out of six. GitHub already stores all of that.</p>
+    <p>Not as a convenience — as its actual data model. A comment on a line of code is not a message. It is a <strong>thread</strong>, and a thread is a row with a user interface attached.</p>
+  </div>
+
+  <div class="legend">
+    <div><span class="sw h"></span><span>Human</span></div>
+    <div><span class="sw m"></span><span>Machine</span></div>
+    <div><span class="sw s"></span><span>Stored</span></div>
+  </div>
+</section>
+
+<!-- ======================================================== THREAD ===== -->
+<section>
+  <div class="step-head">
+    <span class="step-num">PART 1</span>
+    <div>
+      <h2>What a thread actually is</h2>
+      <p class="step-sub">the word doing all the work in this plan</p>
+    </div>
+  </div>
+
+  <div class="plain">
+    <span class="tag">In plain terms</span>
+    <p>On GitHub, when you comment on a specific line of code in the <strong>Files changed</strong> tab, you don't post a message. You <em>open a thread</em>.</p>
+    <p>A thread is a little conversation pinned to that line. Other people reply <em>inside</em> it — their replies belong to that thread, not to the pull request in general. And it has a <strong>Resolve conversation</strong> button. Click it and the thread collapses and is marked resolved.</p>
+    <p>That's the whole trick. A thread already has everything we were going to build:</p>
+    <ul>
+      <li>an <strong>id</strong> — so you can address one finding out of six</li>
+      <li>a <strong>file and line</strong> — so nobody has to ask "which one?"</li>
+      <li>an ordered list of <strong>replies</strong> — the argument, preserved</li>
+      <li>a <strong>resolved flag</strong> — the decision, stored by GitHub</li>
+    </ul>
+    <p>That is a database row. GitHub stores it, renders it, notifies people about it, and lets humans edit it — none of which our table would have done.</p>
+  </div>
+
+  <figure>
+    <svg viewBox="0 0 800 330" role="img" aria-label="On the left, one summary comment listing three findings: a reply addresses all three at once, there is nothing to resolve, and the next run must re-parse the prose. On the right, a single inline thread pinned to a line of code, carrying the finding, a human reply, the bot's concession, and a resolved flag.">
+      <defs>
+        <marker id="tA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+        </marker>
+      </defs>
+
+      <text class="hd" x="20" y="16">ONE SUMMARY COMMENT</text>
+      <rect class="node" x="20" y="26" width="360" height="126" rx="4"/>
+      <text class="t"   x="36" y="50">Review complete — 3 findings</text>
+      <text class="tms" x="36" y="76">• HIGH  ImportController.cs:16  API key hardcoded</text>
+      <text class="tms" x="36" y="98">• MED   ProductService.cs:57  token not threaded</text>
+      <text class="tms" x="36" y="120">• MED   ImportController.cs:79  exception swallowed</text>
+      <text class="tms" x="36" y="142">…one box, three unrelated problems</text>
+
+      <text class="t bad" x="20" y="186">✗  a reply addresses all three at once</text>
+      <text class="t bad" x="20" y="212">✗  nothing to mark resolved</text>
+      <text class="t bad" x="20" y="238">✗  next run must re-parse this prose</text>
+      <text class="ts"    x="20" y="268">So we planned a table to hold what the</text>
+      <text class="ts"    x="20" y="284">comment could not: numbers, replies, verdicts.</text>
+
+      <line class="ln thin" x1="400" y1="10" x2="400" y2="300"/>
+
+      <text class="hd" x="420" y="16">ONE INLINE THREAD</text>
+      <rect class="node code" x="420" y="26" width="360" height="24" rx="3"/>
+      <text class="tms" x="432" y="42">16  private const string SupplierApiKey = "acme-…"</text>
+
+      <rect class="node m" x="442" y="58" width="338" height="34" rx="4"/>
+      <text class="tms" x="454" y="74">polyidus-bot</text>
+      <text class="ts"  x="454" y="87">HIGH — supplier API key hardcoded in source</text>
+
+      <rect class="node h" x="442" y="96" width="338" height="30" rx="4"/>
+      <text class="tms" x="454" y="111">you</text>
+      <text class="ts"  x="454" y="122">that's a public sandbox key, not a secret</text>
+
+      <rect class="node m" x="442" y="130" width="338" height="30" rx="4"/>
+      <text class="tms" x="454" y="145">polyidus-bot</text>
+      <text class="ts"  x="454" y="156">Conceded — withdrawn.</text>
+
+      <rect class="node s" x="442" y="164" width="120" height="24" rx="12"/>
+      <text class="tms" x="502" y="180" text-anchor="middle">✓ Resolved</text>
+
+      <text class="t good" x="420" y="220">✓  the reply belongs to THIS finding</text>
+      <text class="t good" x="420" y="246">✓  resolved is a flag GitHub stores</text>
+      <text class="t good" x="420" y="272">✓  next run reads it back as data</text>
+      <text class="ts"     x="420" y="300">No table needed. The thread is the row.</text>
+    </svg>
+    <figcaption>The left column is what we have today and why it forced a schema. The right column is the same three facts — finding, reply, verdict — held by a structure GitHub already maintains.</figcaption>
+  </figure>
+
+  <div class="tech">
+    <span class="tag">Technically</span>
+    <p>Threads are created by <code>POST /pulls/{n}/reviews</code> with a <code>comments[]</code> array — one request, one notification, however many comments. Replies go to <code>POST /pulls/{n}/comments/{id}/replies</code>. Reading back is <code>GET /pulls/{n}/comments</code>, where every reply carries an <code>in_reply_to_id</code> pointing at its thread root.</p>
+    <p><strong>One wrinkle worth knowing before we build:</strong> the resolved flag is <em>not</em> in the REST API. Review-comment objects don't carry it. It lives on GraphQL's <code>PullRequestReviewThread.isResolved</code>, and resolving is the <code>resolveReviewThread</code> mutation. So "has this been dealt with?" needs one GraphQL query alongside the REST calls. The webhook side is fine — <code>pull_request_review_thread</code> fires with <code>resolved</code> / <code>unresolved</code> actions.</p>
+  </div>
+</section>
+
+<!-- ==================================================== WHAT IT KILLS == -->
+<section>
+  <div class="step-head">
+    <span class="step-num">PART 2</span>
+    <div>
+      <h2>What that deletes</h2>
+      <p class="step-sub">four planned steps, collapsed into one property each</p>
+    </div>
+  </div>
+
+  <figure>
+    <svg viewBox="0 0 780 250" role="img" aria-label="Four things we planned to build — a comment_index column, disagree-N parsing, a dispute_threads table, and a prior_findings query — each replaced by a property a GitHub thread already has: the comment id, a reply, the thread itself, and the resolved flag.">
+      <defs>
+        <marker id="tB" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+        </marker>
+      </defs>
+
+      <text class="hd" x="20"  y="18">WHAT WE PLANNED TO BUILD</text>
+      <text class="hd" x="470" y="18">WHAT A THREAD ALREADY HAS</text>
+
+      <rect class="node dead" x="20" y="30" width="290" height="40" rx="4"/>
+      <text class="tm dim" x="34" y="55">findings.comment_index column</text>
+      <line class="ln" x1="310" y1="50" x2="462" y2="50" marker-end="url(#tB)"/>
+      <rect class="node m" x="470" y="30" width="290" height="40" rx="4"/>
+      <text class="tm" x="484" y="55">the comment's own id</text>
+
+      <rect class="node dead" x="20" y="82" width="290" height="40" rx="4"/>
+      <text class="tm dim" x="34" y="107">parse "@bot disagree 2 — …"</text>
+      <line class="ln" x1="310" y1="102" x2="462" y2="102" marker-end="url(#tB)"/>
+      <rect class="node m" x="470" y="82" width="290" height="40" rx="4"/>
+      <text class="tm" x="484" y="107">a reply inside the thread</text>
+
+      <rect class="node dead" x="20" y="134" width="290" height="40" rx="4"/>
+      <text class="tm dim" x="34" y="159">dispute_threads table</text>
+      <line class="ln" x1="310" y1="154" x2="462" y2="154" marker-end="url(#tB)"/>
+      <rect class="node m" x="470" y="134" width="290" height="40" rx="4"/>
+      <text class="tm" x="484" y="159">the thread itself</text>
+
+      <rect class="node dead" x="20" y="186" width="290" height="40" rx="4"/>
+      <text class="tm dim" x="34" y="211">prior_findings() + findings table</text>
+      <line class="ln" x1="310" y1="206" x2="462" y2="206" marker-end="url(#tB)"/>
+      <rect class="node m" x="470" y="186" width="290" height="40" rx="4"/>
+      <text class="tm" x="484" y="211">isResolved, read back</text>
+    </svg>
+    <figcaption>Every row on the left was code we were about to write. None of it survives contact with an inline thread.</figcaption>
+  </figure>
+
+  <figure>
+    <svg viewBox="0 0 800 300" role="img" aria-label="Before: seven Postgres tables hold everything. After: two tables remain for the job queue and replay guard, and five tables' worth of state moves into GitHub as threads, replies and resolved flags.">
+      <defs>
+        <marker id="tC" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+        </marker>
+      </defs>
+
+      <text class="hd" x="20" y="18">BEFORE</text>
+      <rect class="node s" x="20" y="28" width="250" height="230" rx="5"/>
+      <text class="tm" x="145" y="50" text-anchor="middle">Postgres</text>
+      <rect class="node" x="38" y="62"  width="214" height="24" rx="3"/><text class="tms" x="50" y="78">deliveries</text>
+      <rect class="node" x="38" y="90"  width="214" height="24" rx="3"/><text class="tms" x="50" y="106">jobs</text>
+      <rect class="node" x="38" y="118" width="214" height="24" rx="3"/><text class="tms" x="50" y="134">runs</text>
+      <rect class="node" x="38" y="146" width="214" height="24" rx="3"/><text class="tms" x="50" y="162">findings</text>
+      <rect class="node" x="38" y="174" width="214" height="24" rx="3"/><text class="tms" x="50" y="190">scratchpads</text>
+      <rect class="node" x="38" y="202" width="214" height="24" rx="3"/><text class="tms" x="50" y="218">dispute_threads</text>
+      <rect class="node" x="38" y="230" width="214" height="24" rx="3"/><text class="tms" x="50" y="246">rejections</text>
+
+      <line class="ln" x1="280" y1="140" x2="368" y2="140" marker-end="url(#tC)"/>
+      <text class="al" x="324" y="132" text-anchor="middle">5 tables move</text>
+      <text class="al" x="324" y="158" text-anchor="middle">to the platform</text>
+
+      <text class="hd" x="380" y="18">AFTER</text>
+      <rect class="node s" x="380" y="28" width="190" height="112" rx="5"/>
+      <text class="tm" x="475" y="50" text-anchor="middle">Postgres</text>
+      <rect class="node" x="398" y="62" width="154" height="24" rx="3"/><text class="tms" x="410" y="78">deliveries</text>
+      <rect class="node" x="398" y="90" width="154" height="24" rx="3"/><text class="tms" x="410" y="106">jobs</text>
+      <text class="ts" x="475" y="132" text-anchor="middle">the queue, and only that</text>
+
+      <rect class="node m" x="596" y="28" width="184" height="230" rx="5"/>
+      <text class="tm" x="688" y="50" text-anchor="middle">GitHub</text>
+      <rect class="node" x="612" y="62"  width="152" height="24" rx="3"/><text class="tms" x="624" y="78">threads</text>
+      <rect class="node" x="612" y="90"  width="152" height="24" rx="3"/><text class="tms" x="624" y="106">replies</text>
+      <rect class="node" x="612" y="118" width="152" height="24" rx="3"/><text class="tms" x="624" y="134">isResolved</text>
+      <rect class="node" x="612" y="146" width="152" height="24" rx="3"/><text class="tms" x="624" y="162">comment bodies</text>
+      <text class="ts" x="688" y="196" text-anchor="middle">stored, rendered,</text>
+      <text class="ts" x="688" y="212" text-anchor="middle">notified and editable</text>
+      <text class="ts" x="688" y="228" text-anchor="middle">— none of which our</text>
+      <text class="ts" x="688" y="244" text-anchor="middle">table would have been</text>
+
+      <rect class="node ghost" x="380" y="176" width="190" height="82" rx="5"/>
+      <text class="tms dim" x="475" y="200" text-anchor="middle">rejections</text>
+      <text class="ts" x="475" y="220" text-anchor="middle">deferred — the one</text>
+      <text class="ts" x="475" y="236" text-anchor="middle">thing cross-PR that a</text>
+      <text class="ts" x="475" y="252" text-anchor="middle">thread cannot hold</text>
+    </svg>
+    <figcaption><code>deliveries</code> and <code>jobs</code> survive for a reason unrelated to review state: GitHub allows a webhook about ten seconds to answer, and delivers at least once. They are the price of owning the webhook, not a design preference.</figcaption>
+  </figure>
+
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Deleted</th><th>Lines</th><th>Replaced by</th></tr></thead>
+      <tbody>
+        <tr><td><code>legacy/</code> + its 5 test files</td><td class="st">3,146</td><td>nothing — dead since the bot landed</td></tr>
+        <tr><td><code>bot/review/store.py</code></td><td class="st">209</td><td><code>GET /pulls/{n}/comments</code></td></tr>
+        <tr><td>5 of 7 tables in <code>schema.sql</code></td><td class="st">~120</td><td>threads</td></tr>
+        <tr><td>the four-step dispute plan</td><td class="st">not written</td><td>reply + resolve</td></tr>
+        <tr><td>most of <code>bot/db.py</code></td><td class="st">~120</td><td>—</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ======================================================== LINES ====== -->
+<section>
+  <div class="step-head">
+    <span class="step-num">PART 3</span>
+    <div>
+      <h2>Inline comments, without wrong lines</h2>
+      <p class="step-sub">the thing that makes all of the above safe</p>
+    </div>
+  </div>
+
+  <div class="plain">
+    <span class="tag">Why this is the hard part</span>
+    <p>Everything above depends on the comment landing on the right line. Get it wrong and the bot posts a confident remark about code that has nothing to do with it — which is how a reviewer stops being trusted.</p>
+    <p>And GitHub will only catch <em>some</em> of it. It rejects a line outside the diff entirely. A wrong line that happens to be <em>inside</em> the diff posts silently.</p>
+  </div>
+
+  <div class="callout">
+    <span class="tag">This is Oswald's weakest point</span>
+    <p>Its <code>code-reviewer</code> skill tells the model to do the arithmetic by hand:</p>
+    <p><em>"Parse the diff header to determine the starting line number. Count <strong>EVERY</strong> physical line break from that start index. <strong>CRITICAL:</strong> count lines inside multi-line strings individually — failure to do this causes 'Off-by-N' errors."</em></p>
+    <p>Read the tone. The all-caps, the named bug, the follow-up "mental check" step — that is prompt text that grew out of hitting the problem repeatedly. It is the same approach we started with, and measured: off by 1 to 14 lines, with two findings in a single review reporting 17-18 and 11-12 for the same pair of constants that actually sit at 16-17.</p>
+  </div>
+
+  <div class="col">
+    <p>The fix was to stop asking the model to count. It is asked to <strong>copy</strong> — quote the offending line verbatim — and we do the searching. Copying is something models do reliably; arithmetic through a hunk header is not.</p>
+    <p>That took anchoring accuracy from 1 out of 5 correct to 6 out of 6.</p>
+  </div>
+
+  <figure>
+    <svg viewBox="0 0 800 450" role="img" aria-label="A six-stage funnel for line accuracy: the specialist opens the real file, quotes the offending line verbatim, locate searches the checkout for that string, anchor_findings checks the line falls inside a diff hunk, GitHub validates the position, and a per-comment fallback catches whatever still fails.">
+      <defs>
+        <marker id="tD" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+        </marker>
+      </defs>
+
+      <text class="hd" x="20" y="16">THE PIPELINE</text>
+      <text class="hd" x="470" y="16">WHAT IT CATCHES</text>
+
+      <rect class="node m" x="20" y="28" width="410" height="52" rx="4"/>
+      <text class="t"  x="36" y="50">1 · the specialist opens the real file</text>
+      <text class="ts" x="36" y="68">it has a checkout, not just a diff fragment</text>
+      <text class="ts" x="470" y="50">Reading is exact. The same review that</text>
+      <text class="ts" x="470" y="66">miscounted cited ProductService.cs:57-70</text>
+      <text class="ts" x="470" y="82">precisely — because it had opened it.</text>
+
+      <line class="ln" x1="225" y1="80" x2="225" y2="94" marker-end="url(#tD)"/>
+
+      <rect class="node m" x="20" y="96" width="410" height="52" rx="4"/>
+      <text class="t"  x="36" y="118">2 · it quotes the line, verbatim</text>
+      <text class="tms" x="36" y="136">schema field: offending_line</text>
+      <text class="ts" x="470" y="124">Copying is reliable. Counting through a</text>
+      <text class="ts" x="470" y="140">hunk header is the step that fails.</text>
+
+      <line class="ln" x1="225" y1="148" x2="225" y2="162" marker-end="url(#tD)"/>
+
+      <rect class="node m" x="20" y="164" width="410" height="52" rx="4"/>
+      <text class="t"  x="36" y="186">3 · locate() searches the checkout</text>
+      <text class="tms" x="36" y="204">bot/review/locate.py — exact string match</text>
+      <text class="ts" x="470" y="186">Strips diff markers, tolerates indentation,</text>
+      <text class="ts" x="470" y="202">anchors a multi-line statement at its start,</text>
+      <text class="ts" x="470" y="218">refuses to guess when the quote is absent.</text>
+
+      <line class="ln" x1="225" y1="216" x2="225" y2="230" marker-end="url(#tD)"/>
+
+      <rect class="node m" x="20" y="232" width="410" height="52" rx="4"/>
+      <text class="t"  x="36" y="254">4 · anchor_findings() checks the diff</text>
+      <text class="tms" x="36" y="272">→ LINE  |  FILE  |  NONE</text>
+      <text class="ts" x="470" y="254">A line GitHub would reject becomes a</text>
+      <text class="ts" x="470" y="270">file-level comment instead of an error.</text>
+      <text class="ts" x="470" y="286">NONE goes to the summary, not the bin.</text>
+
+      <line class="ln" x1="225" y1="284" x2="225" y2="298" marker-end="url(#tD)"/>
+
+      <rect class="node" x="20" y="300" width="410" height="52" rx="4"/>
+      <text class="t"  x="36" y="322">5 · GitHub validates the position</text>
+      <text class="tms" x="36" y="340">422 if any one comment is unplaceable</text>
+      <text class="ts" x="470" y="322">The last check, and not ours. It rejects</text>
+      <text class="ts" x="470" y="338">the WHOLE review, which is why 6 exists.</text>
+
+      <line class="ln" x1="225" y1="352" x2="225" y2="366" marker-end="url(#tD)"/>
+
+      <rect class="node" x="20" y="368" width="410" height="52" rx="4"/>
+      <text class="t"  x="36" y="390">6 · fall back, comment by comment</text>
+      <text class="tms" x="36" y="408">publish.post_review()</text>
+      <text class="ts" x="470" y="390">One bad line must not discard a correct</text>
+      <text class="ts" x="470" y="406">review. Post the body, then each comment</text>
+      <text class="ts" x="470" y="422">alone, and keep what GitHub accepts.</text>
+    </svg>
+    <figcaption>Stages 1–4 are ours and run before anything is posted; stage 5 is GitHub's; stage 6 is what stops stage 5 from being all-or-nothing. Oswald has stage 5 and a paragraph of prompt text.</figcaption>
+  </figure>
+
+  <div class="tech">
+    <span class="tag">The three failure modes, and where each is handled</span>
+    <p><strong>Quote not in the file.</strong> The specialist named the wrong file, or invented the line. <code>locate()</code> returns nothing rather than a guess, and the finding drops to file level. A comment on the right file is recoverable; a confident comment on unrelated code is not.</p>
+    <p><strong>Quote appears several times.</strong> A repeated assignment, a common brace. Prefer a line the pull request actually added, then fall back to the model's own number as a tie-breaker — its absolute counting is untrustworthy, but as a hint about <em>which</em> of several identical lines it meant, it is fine.</p>
+    <p><strong>The head moved mid-review.</strong> Someone pushed between the review starting and the comments posting, so every line has shifted. The review is pinned to <code>commit_id</code>, so GitHub rejects it rather than attaching comments to moved code.</p>
+  </div>
+</section>
+
+<!-- ======================================================= POSTING ===== -->
+<section>
+  <div class="step-head">
+    <span class="step-num">PART 4</span>
+    <div>
+      <h2>How a review gets posted</h2>
+      <p class="step-sub">one request, one notification</p>
+    </div>
+  </div>
+
+  <figure>
+    <svg viewBox="0 0 820 340" role="img" aria-label="Findings are split into inline comments, unplaceable findings and ones held back by the density cap; the comments go out as a single review request, and on a 422 rejection the body is posted alone followed by each comment individually.">
+      <defs>
+        <marker id="tE" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+        </marker>
+      </defs>
+
+      <rect class="node m" x="20" y="100" width="170" height="52" rx="4"/>
+      <text class="t"  x="105" y="122" text-anchor="middle">findings</text>
+      <text class="ts" x="105" y="140" text-anchor="middle">anchored, adjudicated</text>
+
+      <line class="ln" x1="190" y1="126" x2="232" y2="126" marker-end="url(#tE)"/>
+
+      <rect class="node m" x="240" y="100" width="160" height="52" rx="4"/>
+      <text class="tm" x="320" y="122" text-anchor="middle">build_comments()</text>
+      <text class="ts" x="320" y="140" text-anchor="middle">sorted by severity</text>
+
+      <line class="ln" x1="400" y1="112" x2="452" y2="52"  marker-end="url(#tE)"/>
+      <line class="ln" x1="400" y1="126" x2="452" y2="126" marker-end="url(#tE)"/>
+      <line class="ln" x1="400" y1="140" x2="452" y2="200" marker-end="url(#tE)"/>
+
+      <rect class="node" x="460" y="28" width="150" height="46" rx="4"/>
+      <text class="t"  x="474" y="48">unplaceable</text>
+      <text class="ts" x="474" y="65">→ summary, collapsed</text>
+
+      <rect class="node m" x="460" y="104" width="150" height="46" rx="4"/>
+      <text class="t"  x="474" y="124">comments[]</text>
+      <text class="ts" x="474" y="141">capped at 10</text>
+
+      <rect class="node" x="460" y="180" width="150" height="46" rx="4"/>
+      <text class="t"  x="474" y="200">held back</text>
+      <text class="ts" x="474" y="217">→ counted, not shown</text>
+
+      <line class="ln" x1="610" y1="127" x2="656" y2="127" marker-end="url(#tE)"/>
+
+      <rect class="node m" x="664" y="96" width="140" height="62" rx="4"/>
+      <text class="tms" x="734" y="118" text-anchor="middle">POST /pulls/</text>
+      <text class="tms" x="734" y="132" text-anchor="middle">{n}/reviews</text>
+      <text class="ts"  x="734" y="150" text-anchor="middle">one notification</text>
+
+      <line class="ln" x1="734" y1="158" x2="734" y2="196" marker-end="url(#tE)"/>
+      <text class="al" x="744" y="180">422?</text>
+
+      <rect class="node ghost" x="240" y="240" width="564" height="80" rx="5"/>
+      <text class="hd" x="256" y="262">FALLBACK — ONE BAD LINE MUST NOT DISCARD A CORRECT REVIEW</text>
+
+      <rect class="node" x="258" y="272" width="240" height="36" rx="4"/>
+      <text class="ts" x="270" y="294">post the summary body alone</text>
+
+      <line class="ln" x1="498" y1="290" x2="530" y2="290" marker-end="url(#tE)"/>
+
+      <rect class="node" x="538" y="272" width="248" height="36" rx="4"/>
+      <text class="ts" x="550" y="294">then each comment separately</text>
+
+      <polyline class="ln dash" points="734,196 734,214 380,214 380,238" marker-end="url(#tE)"/>
+    </svg>
+    <figcaption>The density cap is borrowed from Oswald: at most ten inline comments, lowest severity dropped first. A review with thirty comments isn't read, it's dismissed — so the cap is on what is <em>posted</em>, never on what is found.</figcaption>
+  </figure>
+
+  <pre><span class="c"># bot/review/publish.py — the rule this module exists to enforce</span>
+
+Every finding goes inline, on the line it is about.
+The summary comment contains no findings at all.
+
+<span class="c"># the summary holds only: what ran, what failed, what had no line,
+# and how many were held back. Never the findings themselves.</span></pre>
+</section>
+
+<!-- ========================================================= STATUS ==== -->
+<section>
+  <div class="step-head">
+    <span class="step-num">STATUS</span>
+    <div>
+      <h2>Where this stands</h2>
+      <p class="step-sub">written, versus still to do</p>
+    </div>
+  </div>
+
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Item</th><th>State</th></tr></thead>
+      <tbody>
+        <tr><td><code>client.create_review()</code> — batched review POST</td><td class="st ok">written</td></tr>
+        <tr><td><code>client.create_review_comment()</code> — the fallback</td><td class="st ok">written</td></tr>
+        <tr><td><code>client.list_review_comments()</code> — read the ledger back</td><td class="st ok">written</td></tr>
+        <tr><td><code>bot/review/publish.py</code> — build, format, post, degrade</td><td class="st ok">written</td></tr>
+        <tr><td><code>worker.py</code> posts inline instead of one comment</td><td class="st ok">wired</td></tr>
+        <tr><td>Remove the superseded single-comment builder</td><td class="st todo">next</td></tr>
+        <tr><td>Delete <code>legacy/</code> and its 5 test files</td><td class="st todo">next</td></tr>
+        <tr><td>Cut <code>schema.sql</code> to 2 tables, delete <code>store.py</code></td><td class="st todo">next</td></tr>
+        <tr><td>Read prior threads back for an incremental review</td><td class="st todo">after</td></tr>
+        <tr><td>Reply + resolve on a human's pushback</td><td class="st todo">after</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="col">
+    <p>The two tables that stay — <code>deliveries</code> and <code>jobs</code> — are not review state. They exist because we own the webhook, and GitHub gives it ten seconds and delivers at least once. They are also the part of this project that teaches how a queue, a lock and a crash-safe worker fit together, which was a goal in its own right.</p>
+  </div>
+</section>
+
+<footer>
+  <p>Revised plan, superseding the four-step dispute design in <code>docs/dispute-loop.html</code>. Line references are against the working tree on <code>feat/github-app-reviewer-bot</code>. Oswald quotations are from <code>apps/code-reviewer/prompts/skills/</code>.</p>
+</footer>
+
+</div>

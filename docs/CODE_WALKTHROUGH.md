@@ -47,10 +47,12 @@ Follow it once end to end; everything else is detail.
 | 7 | `reviewer/core/master.py:371` | Master plans, specialists run concurrently. |
 | 8 | `bot/review/adjudicate.py:191` | Duplicates merged, severities normalised, summary written. |
 | 9 | `reviewer/models/anchor.py:119` | Findings placed on lines. |
-| 10 | `bot/review/store.py:79` | Persisted. |
-| 11 | `bot/worker.py:85` | Formatted and posted as a comment. |
+| 10 | `bot/review/publish.py:155` | Split into inline comments, unplaceable, held back. |
+| 11 | `bot/review/publish.py:189` | Posted as one review containing every inline comment. |
 
-Steps 9 and 11 are the weak ones — see §8.
+Nothing is persisted. Findings go straight onto the pull request as inline
+threads, and GitHub holds them from there — including replies and the resolved
+flag, which no table of ours would have carried.
 
 ---
 
@@ -130,8 +132,9 @@ pressed enter, and a review takes minutes. Without a signal you assume it is
 broken and comment again — which queues a second job. A reaction is one fast
 call, sends no notification, and adds no row to the conversation.
 
-`_preview_comment` (`worker.py:85`) formats the result. This is temporary — the
-real output is inline review comments, which is not built yet.
+`publish.build_comments` then splits the findings into inline comments, ones with
+no line in this diff, and ones held back by the density cap; `publish.post_review`
+sends the lot as a single review.
 
 ---
 
@@ -322,35 +325,20 @@ Why it exists: one real review produced **14 findings describing 7 problems**,
 with per-row `SaveChangesAsync` reported four times at `high`, `medium`, `low`
 and `low`. Every finding was true. The review was accurate and unreadable.
 
-### `bot/review/fingerprint.py:90`
+### Dedupe is a judgement, not a key
 
-`sha256(file_path + normalised(title + message))`, truncated to 16 hex chars.
-Normalising strips backticked spans, quoted spans, numbers and stopwords, then
-sorts the remaining words.
+An earlier design hashed a normalised form of each message and enforced dedupe
+with a `UNIQUE` constraint. It **collided**: two hardcoded credentials in one
+file reduced to the same words, so `ON CONFLICT DO NOTHING` silently dropped the
+second — a real finding nobody would ever see.
 
-Measured behaviour — these produce the **same** fingerprint:
+Reducing a sentence to a key cannot tell two different secrets apart. "Is this
+the same defect?" is a semantic question, and it now belongs to the
+adjudication pass, which already answers exactly that question within a run.
 
-```
-Hardcoded credential `sk-123` found at line 41
-Hardcoded credential `sk-999` found at line 87     (literal and line moved)
-found hardcoded credential at line 41 `sk-123`     (reordered)
-```
-
-And these do **not**:
-
-```
-Hardcoded credential at line 41                    (a content word dropped)
-A secret is embedded directly in the source        (fully reworded)
-```
-
-It absorbs mechanical variation but not semantic rewording. An exact hash
-cannot fix that, because the ledger's uniqueness is a database constraint and a
-constraint needs an exact key — so cross-run dedupe will need a similarity
-fallback alongside it. The module docstring says so.
-
----
-
-## 8. The two weak spots
+Across runs, the same job is done by the platform: a finding already posted is
+already a thread on that line, and its `isResolved` flag says whether it has
+been dealt with.
 
 ### Anchoring (`reviewer/models/anchor.py:119`)
 
@@ -376,16 +364,21 @@ lines it counted through the diff
 Counting lines through hunk headers is arithmetic; quoting a line is copying.
 The fix is to ask for the quote and locate it in the checkout ourselves.
 
-### Nothing is posted inline yet
+### Findings are posted inline
 
-`_preview_comment` (`worker.py:85`) dumps everything into one comment. The real
-thing is: create a pending review, add one inline comment per anchored finding
-with an invisible `<!-- reviewer:fp:… -->` marker, submit with
-`event: "COMMENT"` — never `REQUEST_CHANGES`, so the bot can hold an opinion but
-never block a merge.
+`bot/review/publish.py` builds one review containing an inline comment per
+anchored finding and posts it with `event: "COMMENT"` — never
+`REQUEST_CHANGES`, so the bot can hold an opinion but never block a merge.
 
-`reviewer/github/publish.py` already does this for the CLI, over MCP. The bot
-will either reuse it or do the same over REST.
+The summary comment deliberately carries **no findings**. An inline comment
+opens a resolvable thread; a bulleted list in one comment cannot be replied to
+per item or resolved per item.
+
+Two details worth knowing. GitHub rejects the *whole* review with a 422 if any
+single comment is unplaceable, so `post_review` falls back to posting the body
+alone and then each comment separately. And inline comments are capped at ten,
+lowest severity dropped first — the cap is on what is *posted*, never on what
+is found.
 
 ---
 
