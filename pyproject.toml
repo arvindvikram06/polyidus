@@ -38,15 +38,8 @@ bot = [
     "httpx>=0.27",
 ]
 
-[project.scripts]
-# The original CLI, now archived under legacy/ — see legacy/README.md.
-# Kept working so the engine has a second consumer and cannot quietly grow
-# a dependency on the bot.
-reviewer = "legacy.reviewer_cli.cli:app"
-reviewer-fs-server = "legacy.reviewer_cli.mcp.fs_server_main:main"
-
 [tool.hatch.build.targets.wheel]
-packages = ["reviewer", "bot", "legacy"]
+packages = ["reviewer", "bot"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -73,10 +66,6 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # Test helpers commonly unpack a tuple and use only part of it.
 "tests/*" = ["RUF059"]
-# cli.py must call load_dotenv() BEFORE importing anything that reads
-# os.environ at import time (reviewer/config.py does). The import order is
-# load-bearing, so E402 is wrong about this file specifically.
-"legacy/reviewer_cli/cli.py" = ["E402"]
 
 [tool.mypy]
 python_version = "3.12"
