@@ -1,13 +1,6 @@
-"""Run a review for one job, and persist what it found.
+"""Run a review for one job and return what it found.
 
-This is the bot's orchestration. It deliberately does *not* call
-``legacy.reviewer_cli.orchestrator.run_review`` — that function owns its own input
-(a ``ReviewSource``), its own credential (the ``GITHUB_TOKEN`` PAT) and its own
-persistence (JSON session files in the repo under review). All three differ
-here: the diff arrives in the webhook's wake, the credential is a GitHub App
-installation token, and the output goes to Postgres.
-
-What *is* reused is the part worth reusing — the engine:
+This is the bot's orchestration, built on two pieces of the engine:
 
 ``run_master_loop``   the master plans, specialists run concurrently on
                       per-file diff slices, failures are isolated and partial
@@ -15,22 +8,29 @@ What *is* reused is the part worth reusing — the engine:
 ``anchor_findings``   every finding resolved to LINE / FILE / NONE by parsing
                       hunk headers, never by trusting a model's line number
 
-Nothing here posts to GitHub. Step 6 adds that.
+Nothing here is written to a database. Findings are returned to the worker,
+which posts each one as an inline comment on the line it concerns. The thread
+that creates *is* the record: it holds the finding, any reply, and — once
+someone resolves it — the decision. A table of our own could have stored the
+first of those three and none of the rest.
+
+The only state that stays in Postgres is the job queue, which exists because we
+own the webhook, not because a review needs it.
 """
 
 from __future__ import annotations
 
 import logging
+import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
 from bot.github import auth, client
-from bot.review import store
 from bot.review.adjudicate import adjudicate
 from bot.review.local_tools import repo_tools
 from bot.review.locate import resolve_line_ranges
 from bot.workspace import WorkspaceError, checkout
-from reviewer.config import MAX_DIFF_INPUT_TOKENS
+from reviewer.config import MAX_DIFF_INPUT_TOKENS, TRUST_MODEL_LINE_NUMBERS
 from reviewer.core.master import run_master_loop
 from reviewer.models.anchor import AnchorState, anchor_findings, parse_hunks
 from reviewer.models.diff_context import DiffContext, count_tokens
@@ -44,15 +44,10 @@ class ReviewOutcome:
 
     head_sha: str
     changed_files: list[str]
-    diff_tokens: int
     findings: list[Any] = field(default_factory=list)
-    inserted: int = 0
-    deduplicated: int = 0
     anchored: dict[str, int] = field(default_factory=dict)
-    routing_summary: str = ""
     aborted: str | None = None
     skipped: str | None = None
-    run_id: Any = None
     # Specialists that produced no usable output. Not findings — the reason the
     # review is incomplete, which the reader has to be told about explicitly.
     # Silence here would let a partial review read as a clean one.
@@ -62,7 +57,6 @@ class ReviewOutcome:
     # finding id -> other specialists that independently found the same defect.
     # Independent agreement is signal, so it survives the merge.
     agreed_by: dict[str, list[str]] = field(default_factory=dict)
-    merged: int = 0
     dropped: list[tuple[Any, str]] = field(default_factory=list)
 
     @property
@@ -88,7 +82,11 @@ def _repo_context(owner: str, repo: str, pr_number: int, head_sha: str, base_ref
         "  `list_directory(path)` — what is in a directory. Start at `.`\n"
         "  `search_code(pattern)` — regex across the repository, returns "
         "file:line\n"
-        "  `read_file(path)`      — the contents of one file\n\n"
+        "  `read_file(path)`      — one file, with its real line numbers in "
+        "the margin\n\n"
+        "Those line numbers are the answer to 'where is this?'. Read the number "
+        "off the margin and report it — never count lines yourself, and never "
+        "work one out from a diff hunk header.\n\n"
         "A typical lookup: search for the symbol, then read the file the match "
         "is in. If a search returns nothing the symbol genuinely is not there — "
         "this reads the actual files, not an index, so an empty result is an "
@@ -114,7 +112,6 @@ def _changed_files(diff_text: str) -> list[str]:
 
 async def review_pull_request(
     *,
-    job_id: int,
     installation_id: int,
     owner: str,
     repo: str,
@@ -127,14 +124,13 @@ async def review_pull_request(
     # detectable instead of silently invalidating every line number.
     pull = await client.get_pull(installation_id, owner, repo, pr_number)
     head_sha = pull["head"]["sha"]
-    base_sha = (pull.get("base") or {}).get("sha")
     base_ref = (pull.get("base") or {}).get("ref") or "unknown"
 
     diff_text = await client.get_pull_diff(installation_id, owner, repo, pr_number)
     files = _changed_files(diff_text)
 
     if not diff_text.strip() or not files:
-        return ReviewOutcome(head_sha, [], 0, skipped="the diff is empty")
+        return ReviewOutcome(head_sha, [], skipped="the diff is empty")
 
     # The token gate. Measured with cl100k_base against a GLM model, so it is
     # an approximation with unknown error — hence a gate rather than a budget.
@@ -143,21 +139,17 @@ async def review_pull_request(
         return ReviewOutcome(
             head_sha,
             files,
-            diff_tokens,
             skipped=(
                 f"the diff is {diff_tokens:,} tokens, over the "
                 f"{MAX_DIFF_INPUT_TOKENS:,} limit"
             ),
         )
 
-    run_id = await store.open_run(
-        job_id=job_id,
-        owner=owner,
-        repo=repo,
-        pr_number=pr_number,
-        head_sha=head_sha,
-        base_sha=base_sha,
-    )
+    # A correlation id for the log only. Findings are no longer written to a
+    # table: they are posted as inline threads, and GitHub holds them from
+    # there — including the replies and the resolved flag, which is the part a
+    # table of our own could never have carried.
+    run_id = uuid.uuid4()
 
     # Specialists read from a checkout of this exact commit, not through the
     # API. Measured: reviewing through the API, three specialists opened one
@@ -185,12 +177,23 @@ async def review_pull_request(
             # while the checkout still exists. Counting lines through diff
             # hunks is arithmetic the model gets wrong; finding a quoted string
             # in a file is a search we get right.
-            located = resolve_line_ranges(
-                result.findings, repo_root, parse_hunks(diff_text)
-            )
-            log.info("run %s: line numbers %s", run_id, located)
+            if TRUST_MODEL_LINE_NUMBERS:
+                # Oswald's approach, for comparison: take the number the model
+                # counted from the hunk header and post on it. Nothing verifies
+                # it, which is the point of running this once — a wrong line
+                # here is invisible, exactly as it would be there.
+                log.warning(
+                    "run %s: TRUST_MODEL_LINE_NUMBERS is on — posting the "
+                    "counted line without checking it against the file",
+                    run_id,
+                )
+            else:
+                located = resolve_line_ranges(
+                    result.findings, repo_root, parse_hunks(diff_text)
+                )
+                log.info("run %s: line numbers %s", run_id, located)
     except WorkspaceError as exc:
-        await store.close_run(run_id, summary=f"aborted: {exc}", aborted=str(exc))
+        log.error("run %s aborted: %s", run_id, exc)
         raise
 
     # A specialist that died produces a Finding marked `is_failure` rather than
@@ -213,10 +216,8 @@ async def review_pull_request(
     # other, so the same defect arrives several times at several severities.
     # One pass groups them, scores each group once against the rubric, and
     # writes the summary. It never rewrites a finding's words.
-    before_adjudication = len(result.findings)
     verdict = await adjudicate(result.findings)
     result.findings = verdict.findings
-    merged_count = before_adjudication - len(verdict.findings) - len(verdict.dropped)
 
     # Placement is decided here, by parsing the diff — never by asking the
     # model where its comment should go. A miscounted line would otherwise post
@@ -230,54 +231,19 @@ async def review_pull_request(
         "none": sum(1 for s in states if s is AnchorState.NONE),
     }
 
-    inserted, deduplicated = await store.save_findings(
-        run_id,
-        owner=owner,
-        repo=repo,
-        pr_number=pr_number,
-        head_sha=head_sha,
-        findings=result.findings,
-    )
-    # Failures are stored too, marked `suppressed` so nothing publishes them.
-    # Filtering them out of the ledger entirely was a mistake: it removed the
-    # only record of *why* a specialist produced nothing, which is exactly the
-    # question worth answering afterwards.
-    if failures:
-        await store.save_findings(
-            run_id,
-            owner=owner,
-            repo=repo,
-            pr_number=pr_number,
-            head_sha=head_sha,
-            findings=failures,
-            status="suppressed",
-        )
-    await store.save_scratchpads(run_id, result.trace)
-
     failed_specialists = sorted({f.subagent for f in failures})
-    summary = _summary(result, anchored, inserted, deduplicated, failed_specialists)
-    await store.close_run(
-        run_id,
-        summary=summary,
-        routing=[e.model_dump(mode="json") for e in result.trace],
-        aborted=result.aborted,
-    )
+    summary = _summary(result, anchored, failed_specialists)
+    log.info("run %s: %s", run_id, summary)
 
     return ReviewOutcome(
         head_sha=head_sha,
         changed_files=files,
-        diff_tokens=diff_tokens,
         findings=result.findings,
-        inserted=inserted,
-        deduplicated=deduplicated,
         anchored=anchored,
-        routing_summary=result.routing_summary,
         aborted=result.aborted,
-        run_id=run_id,
         failed_specialists=failed_specialists,
         summary_text=verdict.summary,
         agreed_by=verdict.agreed_by,
-        merged=merged_count,
         dropped=verdict.dropped,
     )
 
@@ -285,8 +251,6 @@ async def review_pull_request(
 def _summary(
     result: Any,
     anchored: dict[str, int],
-    inserted: int,
-    deduplicated: int,
     failed_specialists: list[str],
 ) -> str:
     if result.findings:
@@ -310,8 +274,6 @@ def _summary(
             f" No usable output from: {', '.join(failed_specialists)} — "
             "those areas were not reviewed."
         )
-    if deduplicated:
-        text += f" {deduplicated} duplicate(s) collapsed."
     if result.cap_reached:
         text += " The master dispatch cap was reached; the review may be incomplete."
     if result.aborted:

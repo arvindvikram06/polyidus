@@ -315,7 +315,7 @@ def _absorb(
         )
         seen_agents.add(run.agent)
         findings.extend(run.findings)
-
+    
 
 def _salvage_result(collected: dict[str, list[SpecialistRun]], reason: str) -> MasterResult:
     """Rebuild a result from completed runs after the master loop died.

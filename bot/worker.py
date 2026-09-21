@@ -1,13 +1,14 @@
 """The worker: claims jobs and does the slow work GitHub would not wait for.
 
-Step 3 scope deliberately stops short of reviewing. This process proves the
-plumbing end to end — claim, lock, acknowledge, report, release — with no agent
-and no model involved. Every later step replaces the body of ``handle_review``
-and leaves this loop alone.
+A review takes minutes; a webhook gets about ten seconds. So the API server
+writes a job row and returns, and this process picks it up. That split is the
+entire reason Postgres is in this project — it holds no review state, only
+work that must survive a crash.
 
-Getting this boring first matters because almost every plumbing failure
-(signature, replay, loop guard, the ten-second response) produces symptoms
-that look like a broken agent.
+The loop itself is deliberately dull: claim, lock, handle, release. Almost
+every plumbing failure (signature, replay, loop guard, the ten-second
+response) produces symptoms that look like a broken agent, so the plumbing is
+kept boring enough to rule out.
 
     python -m bot.worker
 """
@@ -22,8 +23,12 @@ import signal
 import asyncpg
 
 from bot import config, db, locks
-from bot.github import client
+from bot.github import auth, client
+from bot.review import publish
+from bot.review.local_tools import repo_tools
+from bot.review.recheck import recheck
 from bot.review.run import review_pull_request
+from bot.workspace import checkout
 
 logging.basicConfig(
     level=logging.INFO,
@@ -48,7 +53,6 @@ async def handle_review(job: asyncpg.Record) -> None:
             await client.react_to_issue_comment(inst, owner, repo, job["trigger_comment_id"])
 
     outcome = await review_pull_request(
-        job_id=job["id"],
         installation_id=inst,
         owner=owner,
         repo=repo,
@@ -65,126 +69,132 @@ async def handle_review(job: asyncpg.Record) -> None:
         return
 
     log.info(
-        "review %s/%s#%s done: %d finding(s), %d new, %d duplicate, anchoring %s",
-        owner, repo, pr, len(outcome.findings),
-        outcome.inserted, outcome.deduplicated, outcome.anchored,
+        "review %s/%s#%s done: %d finding(s), anchoring %s",
+        owner, repo, pr, len(outcome.findings), outcome.anchored,
     )
 
-    # --- step 6 replaces this with a real review + inline comments -------
-    # Findings exist and are anchored, but posting them as a pull request
-    # review needs the fingerprint markers and the publisher. For now they are
-    # reported in one comment so the run can be judged.
-    await client.post_issue_comment(
-        inst, owner, repo, pr, _review_comment(outcome, job["requested_by"])
+    # Every finding goes inline, on the line it is about; the summary carries
+    # none. An inline comment is a resolvable thread, and that thread is the
+    # record — it holds the finding, any reply, and the eventual decision,
+    # which a bulleted list in one comment cannot.
+    line_comments, file_comments, unplaceable, held_back = publish.build_comments(
+        outcome.findings, outcome.agreed_by
     )
-
-
-_SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
-
-
-def _review_comment(outcome, requested_by: str) -> str:
-    """The review, as one comment on the pull request.
-
-    Deliberately one comment rather than inline review comments: a single
-    place to read, nothing to submit, and no risk of a wrong line putting a
-    confident remark on unrelated code. Each finding carries `file:line` in
-    its heading instead, resolved from the quoted source line.
-    """
-    lines = [
-        (
-            f"**Review complete** at `{outcome.head_sha[:8]}` — "
-            f"{len(outcome.findings)} finding(s) across "
-            f"{len(outcome.changed_files)} file(s), "
-            f"{outcome.diff_tokens:,} diff tokens."
-        ),
-        "",
-    ]
-    if outcome.aborted:
-        lines += [f"> ⚠️ **Partial review.** {outcome.aborted}", ""]
-    if outcome.failed_specialists:
-        # Stated before the findings, not buried under them. A reader who sees
-        # eight findings and no warning reasonably concludes the change was
-        # fully reviewed; naming what failed is what stops that.
-        lines += [
-            "> ⚠️ **Incomplete.** No usable output from "
-            + ", ".join(f"`{s}`" for s in outcome.failed_specialists)
-            + " — whatever those specialists cover was not reviewed.",
-            "",
-        ]
-
-    if outcome.summary_text:
-        # The adjudicator's paragraph, before the list. A reviewer should be
-        # able to stop reading after this and still know what matters.
-        lines += [outcome.summary_text, "", "---", ""]
-
-    if not outcome.findings:
-        lines.append("_No findings._")
-    else:
-        for f in sorted(
-            outcome.findings, key=lambda f: _SEVERITY_ORDER.get(f.severity.value, 9)
-        ):
-            where = f.file_path
-            if f.line_range:
-                where += f":{f.line_range[0]}"
-            # Independent agreement is evidence, so it is shown rather than
-            # thrown away with the duplicate — three specialists finding the
-            # same thing is worth more than one finding it.
-            also = outcome.agreed_by.get(f.id) or []
-            credit = f.subagent
-            if also:
-                credit += ", " + ", ".join(also)
-            lines += [
-                f"#### `{where}`",
-                f"**{f.severity.value.upper()}** — {f.title}",
-                "",
-                f"{f.message}",
-                "",
-                f"<sub>{credit}</sub>",
-                "",
-            ]
-            if f.suggested_patch:
-                lines += ["```suggestion", f.suggested_patch.rstrip(), "```", ""]
-
-    if outcome.dropped:
-        # Shown, not hidden. A finding the adjudicator threw away is a decision
-        # someone may disagree with, and it should be auditable without psql.
-        lines += [
-            f"<details><summary>Dropped during review ({len(outcome.dropped)})</summary>",
-            "",
-        ]
-        for finding, reason in outcome.dropped:
-            lines.append(f"- **{finding.title}** (_{finding.subagent}_) — {reason}")
-        lines += ["", "</details>", ""]
-
-    lines += [
-        "---",
-        (
-            f"<sub>{outcome.anchored.get('line', 0)} located to a line, "
-            f"{outcome.anchored.get('file', 0)} file-level · "
-            f"{outcome.merged} merged, {len(outcome.dropped)} dropped · "
-            f"{outcome.inserted} new, {outcome.deduplicated} duplicate · "
-            f"run `{outcome.run_id}` · requested by @{requested_by}</sub>"
-        ),
-    ]
-    return "\n".join(lines)
+    body = publish.summary_body(
+        head_sha=outcome.head_sha,
+        changed_files=len(outcome.changed_files),
+        posted=len(line_comments) + len(file_comments),
+        requested_by=job["requested_by"],
+        unplaceable=unplaceable,
+        held_back=held_back,
+        overview=outcome.summary_text,
+        aborted=outcome.aborted,
+        failed_specialists=outcome.failed_specialists,
+    )
+    accepted, rejected = await publish.post_review(
+        inst, owner, repo, pr,
+        body=body,
+        line_comments=line_comments,
+        file_comments=file_comments,
+        head_sha=outcome.head_sha,
+    )
+    for comment, reason in rejected:
+        log.warning("comment on %s rejected: %s", comment.get("path"), reason)
+    log.info(
+        "posted %s/%s#%s: %d on a line, %d file-level, %d unplaceable, "
+        "%d held back, %d rejected",
+        owner, repo, pr, len(line_comments), len(file_comments),
+        len(unplaceable), held_back, len(rejected),
+    )
+    if accepted and not line_comments:
+        # Worth shouting about. Every finding landed at file level, which means
+        # the quote-and-locate path produced nothing usable — the review is
+        # still correct but it reads as a pile of file comments.
+        log.warning(
+            "%s/%s#%s: NOTHING anchored to a line. Check the 'line numbers' "
+            "tally above for why.", owner, repo, pr,
+        )
 
 
 async def handle_dispute(job: asyncpg.Record) -> None:
-    """Placeholder until step 9.
+    """A human replied to one of our inline comments. Answer them.
 
-    Enqueued replies are acknowledged and dropped. They cannot be acted on yet
-    because there is no finding ledger to look the disputed finding up in, and
-    no fingerprint marker in any comment body to find it by.
+    The thread is the whole record. Its root comment IS the finding — file,
+    line and text — so there is nothing to look up and no table to consult.
+    That is what posting findings inline bought us.
     """
-    log.info(
-        "dispute on %s/%s#%s by @%s — acknowledged, not handled until step 9",
-        job["owner"], job["repo"], job["pr_number"], job["requested_by"],
+    owner, repo, pr = job["owner"], job["repo"], job["pr_number"]
+    inst = job["installation_id"]
+    reply_id = job["trigger_comment_id"]
+
+    # Fetch before reacting. A human who posts and then deletes leaves a
+    # delivery for a comment that no longer exists, and reacting to it first
+    # only produces a 403 on the way to the same 404.
+    try:
+        reply = await client.get_review_comment(inst, owner, repo, reply_id)
+    except client.GitHubError as exc:
+        if "404" in str(exc):
+            # Withdrawn before we got to it. Not a failure — retrying three
+            # times and marking the job dead is noise about a non-event.
+            log.info("dispute %s: the comment was deleted, nothing to answer", reply_id)
+            return
+        raise
+
+    with contextlib.suppress(client.GitHubError):
+        await client.react_to_review_comment(inst, owner, repo, reply_id)
+
+    root_id = reply.get("in_reply_to_id")
+    if not root_id:
+        log.info("dispute %s: not a reply, ignoring", reply_id)
+        return
+
+    root = await client.get_review_comment(inst, owner, repo, root_id)
+    if (root.get("user") or {}).get("login") != config.BOT_LOGIN:
+        # Someone replying to another human in a thread we never opened.
+        log.info("dispute %s: root comment is not ours, ignoring", root_id)
+        return
+
+    objection = (reply.get("body") or "").strip()
+    if not objection:
+        return
+
+    pull = await client.get_pull(inst, owner, repo, pr)
+    head_sha = pull["head"]["sha"]
+    token = await auth.installation_token(inst)
+
+    async with checkout(owner, repo, head_sha, token) as repo_root:
+        verdict = await recheck(
+            repo_root=repo_root,
+            tools=repo_tools(repo_root),
+            file_path=root["path"],
+            line=root.get("line") or root.get("original_line"),
+            finding_body=root.get("body") or "",
+            objection=objection,
+        )
+
+    conceded = verdict.outcome == "concede"
+    prefix = "**Withdrawn.**" if conceded else "**Still stands.**"
+    await client.reply_to_review_comment(
+        inst, owner, repo, pr, root_id, f"{prefix} {verdict.reasoning}"
     )
-    if job["trigger_comment_id"]:
-        with contextlib.suppress(client.GitHubError):
-            await client.react_to_review_comment(
-                job["installation_id"], job["owner"], job["repo"], job["trigger_comment_id"]
-            )
+
+    if conceded:
+        # Resolving is the concession made durable: the thread collapses, and
+        # a later run reading threads back can see it was settled. REST cannot
+        # do this, which is the only reason there is any GraphQL here.
+        try:
+            thread = await client.find_review_thread(inst, owner, repo, pr, root_id)
+            if thread and not thread["isResolved"]:
+                await client.resolve_review_thread(inst, thread["id"])
+        except client.GitHubError as exc:
+            # The reply already posted, so the human has their answer. A failed
+            # resolve leaves the thread open — untidy, not wrong.
+            log.warning("could not resolve thread for comment %s: %s", root_id, exc)
+
+    log.info(
+        "dispute %s/%s#%s by @%s on %s: %s",
+        owner, repo, pr, job["requested_by"], root["path"], verdict.outcome,
+    )
 
 
 HANDLERS = {"review": handle_review, "dispute": handle_dispute}
