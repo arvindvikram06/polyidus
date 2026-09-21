@@ -17,24 +17,35 @@ from reviewer.models.findings import EvidenceItem, Finding, FindingStatus, Sever
 
 class FindingDraft(BaseModel):
     file_path: str
-    hunk_header: str | None = Field(
-        default=None,
-        description="The `@@ ... @@` header of the hunk containing this finding, copied verbatim.",
-    )
-    offending_line: str | None = Field(
-        default=None,
+    # REQUIRED, and deliberately so. It was optional, with a description ending
+    # "Omit only for a whole-file finding" — and models took that exit almost
+    # every time: one run quoted nothing for 12 of 14 findings, so every
+    # comment fell back to file level and GitHub rendered them all at line 1.
+    #
+    # A finding with no quote cannot be placed, and a comment that cannot be
+    # placed is a comment on the wrong line. So there is no longer a way to
+    # express "I did not look". Quote something real, even for a whole-file
+    # finding — the class or namespace declaration is a fair anchor.
+    offending_line: str = Field(
         description=(
-            "The offending line of source, copied EXACTLY as it appears in the "
-            "file — no leading '+', no paraphrasing. We find it in the file to "
-            "get the real line number, so an accurate copy matters more than an "
-            "accurate line number. Omit only for a whole-file finding."
+            "REQUIRED. One line of source copied EXACTLY as it appears in the "
+            "file — no leading '+', no paraphrasing, no ellipsis. This is what "
+            "places the finding: we search the file for this exact text to get "
+            "the real line number, so copying accurately matters far more than "
+            "reporting an accurate line number. For a finding about a whole "
+            "file, quote its class or namespace declaration."
         ),
     )
-    line_range: tuple[int, int] | None = Field(
-        default=None,
+    # Required, and now answerable by reading rather than counting: `read_file`
+    # prints each line's real number in the margin. That matters most for the
+    # lines a quote cannot identify — `catch`, `{`, `else` — which are 23% of a
+    # typical file and used to end up with no line at all.
+    line_range: tuple[int, int] = Field(
         description=(
-            "[start, end] in the new file, if you know it. Only a fallback — "
-            "`offending_line` above is what actually places the finding."
+            "[start, end] in the new file, COPIED from the line numbers "
+            "`read_file` prints in the margin. Do not count lines and do not "
+            "work a number out from a diff header — open the file and read the "
+            "number next to the code you are flagging."
         ),
     )
     severity: Severity = Field(
@@ -225,7 +236,6 @@ async def run_subagent_review(
         Finding(
             subagent=name,
             file_path=draft.file_path,
-            hunk_header=draft.hunk_header,
             line_range=draft.line_range,
             offending_line=draft.offending_line,
             severity=draft.severity,

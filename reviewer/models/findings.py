@@ -37,7 +37,6 @@ class Finding(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     subagent: str
     file_path: str
-    hunk_header: str | None = None
     line_range: tuple[int, int] | None = None
     # The offending source line, copied verbatim by the specialist. This is
     # what places the comment: quoting is a copy, which models do reliably,

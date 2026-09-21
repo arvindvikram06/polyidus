@@ -170,8 +170,19 @@ def test_the_schema_asks_for_a_quote_rather_than_an_arithmetic_result():
     assert "EXACTLY" in quote, "the value of a quote is that it is not paraphrased"
     assert "+" in quote, "diff markers must be stripped or nothing will match"
 
-    fallback = FindingDraft.model_fields["line_range"].description or ""
-    assert "fallback" in fallback.lower(), "must not read as the primary mechanism"
+    # `line_range` is required, and must be asked for as a COPY from the
+    # numbered `read_file` output — never as arithmetic. Counting is the step
+    # that put a finding on a blank line; the guard is here so nobody restores
+    # the "calculate from the diff header" wording.
+    counted = FindingDraft.model_fields["line_range"]
+    assert counted.is_required(), "a short quote like `catch` needs this to be placed"
+    described = (counted.description or "").lower()
+    assert "copied from" in described, "the number is read, not worked out"
+    assert "do not count" in described
+
+    # The invariant that must hold regardless: a quote is mandatory, so a
+    # finding can always be placed by searching rather than by arithmetic.
+    assert FindingDraft.model_fields["offending_line"].is_required()
 
     # These descriptions were four times this size. The run after that change
     # lost a whole specialist to unparseable output and dropped from 9 findings

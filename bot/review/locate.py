@@ -149,6 +149,22 @@ def locate(
     return Located(candidates[0], f"{len(matches)} matches, took the first")
 
 
+def _has_content(repo_root: Path, file_path: str, line: int) -> bool:
+    """Is there actually code on that line?
+
+    A finding is never *about* a blank line, so a reported number that lands on
+    one is off by a line or two. Measured: asked to count, a model placed
+    "SaveChangesAsync is inside a loop" on line 74 — which is empty; the call is
+    on 75. Refusing here costs one file-level comment and prevents a confident
+    remark pointing at nothing.
+    """
+    try:
+        lines = (Path(repo_root) / file_path).read_text(errors="ignore").splitlines()
+    except OSError:
+        return False
+    return 1 <= line <= len(lines) and bool(lines[line - 1].strip())
+
+
 def resolve_line_ranges(
     findings: list[Any], repo_root: Path, hunks_by_path: dict[str, FileHunks]
 ) -> dict[str, int]:
@@ -158,7 +174,11 @@ def resolve_line_ranges(
     own ``line_range`` survives only where no quote could be resolved — it is a
     fallback, not the mechanism.
     """
-    tally = {"quoted": 0, "kept_model_line": 0, "no_line": 0}
+    # `agreed` / `corrected` are the experiment: how often the line the model
+    # counted from the diff header matches the line its quote actually sits on.
+    # That ratio is the whole case for doing the search ourselves, and it can
+    # only be measured while both numbers exist.
+    tally = {"quoted": 0, "kept_model_line": 0, "no_line": 0, "agreed": 0, "corrected": 0}
 
     for finding in findings:
         found = locate(
@@ -172,20 +192,47 @@ def resolve_line_ranges(
             previous = finding.line_range[0] if finding.line_range else None
             finding.line_range = (found.line, found.line)
             tally["quoted"] += 1
-            if previous is not None and previous != found.line:
+            if previous is None:
+                pass
+            elif previous == found.line:
+                tally["agreed"] += 1
+            else:
+                tally["corrected"] += 1
                 # The measurement that justifies this module. Logged every time
                 # so the size of the correction stays visible.
                 log.info(
-                    "located %s:%s by quote (%s) — the specialist said %s",
-                    finding.file_path, found.line, found.reason, previous,
+                    "located %s:%s by quote (%s) — the specialist counted %s, off by %+d",
+                    finding.file_path, found.line, found.reason,
+                    previous, previous - found.line,
                 )
-        elif finding.line_range:
+        elif finding.line_range and _has_content(repo_root, finding.file_path,
+                                                 finding.line_range[0]):
+            # The quote could not be resolved — usually because it is a `catch`
+            # or a brace, too common to identify a place. The reported number
+            # carries it instead: `read_file` prints line numbers in the margin,
+            # so that number was read rather than counted.
             tally["kept_model_line"] += 1
             log.info(
-                "%s: %s, keeping the reported line %s",
+                "%s: %s, using the reported line %s",
                 finding.file_path, found.reason, finding.line_range[0],
             )
         else:
+            # Clear it. A number we have just refused must not survive into
+            # `anchor_findings`, which would place a comment on it regardless.
+            finding.line_range = None
             tally["no_line"] += 1
+            # Silence here was a real cost: one run placed nothing on a line
+            # and the tally said `no_line: 12` without saying why. The two
+            # causes need different fixes — a missing quote is a prompt or
+            # schema problem, a quote that does not match is a model copying
+            # the code wrong — so they are worth distinguishing in the log.
+            quote = getattr(finding, "offending_line", None)
+            log.warning(
+                "%s: no line for %r — %s%s",
+                finding.file_path,
+                finding.title,
+                found.reason,
+                f" (quoted {quote!r})" if quote else " (the specialist quoted nothing)",
+            )
 
     return tally

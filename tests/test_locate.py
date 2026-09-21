@@ -158,17 +158,60 @@ def test_resolving_a_batch_overwrites_bad_numbers_and_keeps_good_fallbacks(repo:
     findings = [
         make("failed++;", (65, 65)),                      # quote wins over a bad count
         make("var errors = new List<string>();", None),   # quote supplies a missing one
-        make("this line is not in the file", (40, 40)),   # unresolvable, keep the model's
+        make("this line is not in the file", (9, 9)),     # unresolvable, use the number
         make(None, None),                                 # nothing to work with
+        make("failed++;", (19, 19)),                      # the model read it correctly
     ]
 
     tally = resolve_line_ranges(findings, repo, {})
 
     assert findings[0].line_range == (19, 19), "the counted 65 must be overwritten"
     assert findings[1].line_range == (9, 9)
-    assert findings[2].line_range == (40, 40), "a fallback is better than nothing"
+    assert findings[2].line_range == (9, 9), "an unmatched quote falls back to the number"
     assert findings[3].line_range is None
-    assert tally == {"quoted": 2, "kept_model_line": 1, "no_line": 1}
+    assert tally == {
+        "quoted": 3, "kept_model_line": 1, "no_line": 1,
+        # The comparison that decides whether counting can be trusted at all.
+        "agreed": 1, "corrected": 1,
+    }
+
+
+def test_a_reported_line_with_nothing_on_it_is_refused(repo: Path):
+    """A finding is never *about* a blank line, or one past the end of a file.
+
+    Measured: asked to count, a model put "SaveChangesAsync is inside a loop"
+    on line 74 — which is empty; the call is on 75. Falling back to a number
+    is only safe if the number lands on actual code.
+    """
+    blank = make("nowhere in this file", (10, 10))    # line 10 is empty
+    past_end = make("nowhere in this file", (400, 400))
+    real = make("nowhere in this file", (9, 9))       # line 9 has code
+
+    tally = resolve_line_ranges([blank, past_end, real], repo, {})
+
+    assert blank.line_range is None, "a blank line points at nothing"
+    assert past_end.line_range is None, "outside the file is not a location"
+    assert real.line_range == (9, 9)
+    assert tally["kept_model_line"] == 1
+    assert tally["no_line"] == 2
+
+
+def test_the_tally_separates_a_correct_count_from_a_corrected_one(repo: Path):
+    """`agreed` vs `corrected` is the measurement, so it gets its own test.
+
+    Trusting the model's arithmetic — which is what Oswald does — is only safe
+    if `corrected` stays at zero. This is how we find out.
+    """
+    findings = [
+        make("failed++;", (19, 19)),   # right
+        make("failed++;", (65, 65)),   # wrong by 46
+    ]
+
+    tally = resolve_line_ranges(findings, repo, {})
+
+    assert tally["agreed"] == 1
+    assert tally["corrected"] == 1
+    assert all(f.line_range == (19, 19) for f in findings), "both end up on the real line"
 
 
 # --- statements split across lines -------------------------------------------

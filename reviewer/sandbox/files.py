@@ -179,13 +179,25 @@ def read_file(repo_root: Path, path: str, start_line: int | None = None, end_lin
         raise ToolError(f"no such file: {path}")
 
     lines = target.read_text(errors="ignore").splitlines()
+    first = 1
     if start_line is not None or end_line is not None:
         start = max((start_line or 1) - 1, 0)
         end = end_line if end_line is not None else len(lines)
         lines = lines[start:end]
+        first = start + 1
 
     truncated = len(lines) > _MAX_READ_LINES
-    body = "\n".join(lines[:_MAX_READ_LINES])
+    shown = lines[:_MAX_READ_LINES]
+
+    # Every line carries its real number. Without this a specialist that has
+    # the file open still has to COUNT to report where something is, and
+    # counting is what it gets wrong: one review placed a finding on line 74,
+    # which is blank, when the offending call was on 75.
+    #
+    # The number is not decoration. It is the answer to the only question the
+    # model cannot work out reliably on its own, and it costs about six
+    # characters a line to hand it over.
+    body = "\n".join(f"{first + i:>5} | {line}" for i, line in enumerate(shown))
     if truncated:
         body += f"\n... truncated at {_MAX_READ_LINES} lines; request a narrower range."
     return body

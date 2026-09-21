@@ -84,7 +84,27 @@ def test_reading_a_line_range_returns_only_those_lines(repo: Path):
     out = call(
         tools(repo)["read_file"], path="src/Domain/Product.cs", start_line=3, end_line=4
     )
-    assert out.splitlines() == ["public class Product", "{"]
+    assert out.splitlines() == ["    3 | public class Product", "    4 | {"]
+
+
+def test_every_line_read_carries_its_real_number(repo: Path):
+    """The number is the point of reading through a tool rather than a diff.
+
+    A specialist with the file open still has to say WHERE something is, and
+    counting is the step it gets wrong — one review placed a finding on a blank
+    line because the count was off by one. Numbering the output turns that
+    count into a copy.
+
+    Reading a range must keep the file's own numbering, not restart at 1;
+    otherwise a narrow read reports a line that does not exist.
+    """
+    whole = call(tools(repo)["read_file"], path="src/Domain/Product.cs")
+    assert whole.splitlines()[0].startswith("    1 | ")
+
+    window = call(
+        tools(repo)["read_file"], path="src/Domain/Product.cs", start_line=3, end_line=4
+    )
+    assert window.startswith("    3 | "), "an offset read must not renumber from 1"
 
 
 def test_listing_marks_directories(repo: Path):
