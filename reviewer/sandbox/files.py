@@ -1,9 +1,8 @@
 """Sandboxed, read-only access to a repository.
 
-Pure filesystem logic with no framework imports: path containment, the
-deny-list, symlink handling and output caps live here, and ``server.py`` is the
-only thing that wraps them for a protocol. Keeping this module free of MCP and
-LangChain is what lets the whole security model be read in one file.
+Pure filesystem logic with no framework imports — path containment, the
+deny-list, symlink handling and output caps. Keeping it framework-free is what
+lets the whole security model be read in one file.
 """
 
 from __future__ import annotations
@@ -11,9 +10,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-# Never readable through these tools, even inside the repository. Specialists
-# are driven by an LLM whose input is an untrusted diff, so a prompt-injected
-# instruction to read a credential must fail at the tool boundary.
+# Never readable, even inside the repository: the diff is untrusted input, so a
+# prompt-injected instruction to read a credential must fail at the boundary.
 _DENIED_PARTS = frozenset(
     {".git", ".env", ".venv", "venv", "node_modules", "__pycache__", ".ssh", ".aws", ".reviewer", ".xml", "pom.xml"}
 )
@@ -59,22 +57,17 @@ def _grep_ripgrep(
 ) -> list[str] | None:
     """Search with ripgrep, or return None if it is unavailable.
 
-    Returns None rather than raising so the caller can fall back to the pure
-    Python walk — `rg` is not present in a slim container unless installed, and
-    a missing binary must not break reviews.
+    None rather than raising, so the caller falls back to the Python walk — a
+    missing binary must not break reviews.
 
-    Notes on the flags, since several are load-bearing:
+    Load-bearing flags:
 
-    * `--no-config` — a `~/.ripgreprc` on the host could otherwise change what
-      a review can see. Results must depend only on the repository.
-    * `--regexp` — the pattern comes from a model. Passed positionally, one
-      beginning with `-` would be parsed as a flag; behind `--regexp` it cannot
-      be.
-    * no `--follow` — ripgrep does not follow symlinks by default, which is
-      what keeps a link pointing outside the checkout from being read.
-    * `--hidden` with explicit excludes — dotfiles matter to a reviewer
-      (`.github/workflows`), so they are searched, and the deny-list is applied
-      on top rather than relying on them being hidden.
+    * `--no-config` — a host `~/.ripgreprc` must not change what a review sees.
+    * `--regexp` — the pattern comes from a model; positionally, one starting
+      with `-` would parse as a flag.
+    * no `--follow` — keeps a symlink out of the checkout from being read.
+    * `--hidden` plus explicit excludes — dotfiles matter (`.github/workflows`),
+      so they are searched and the deny-list is applied on top.
     """
     import shutil
     import subprocess
@@ -132,9 +125,8 @@ def _grep_ripgrep(
 def grep(repo_root: Path, pattern: str, path_glob: str = "**/*", max_matches: int = _MAX_GREP_MATCHES) -> str:
     """Search the repository, preferring ripgrep and falling back to Python.
 
-    ripgrep is many times faster on a large checkout, which matters because a
-    specialist's time is part of its budget. The pure Python walk below stays
-    as the fallback so a container without `rg` still works.
+    ripgrep is far faster on a large checkout, and a specialist's time is part
+    of its budget. The Python walk keeps a container without `rg` working.
     """
     try:
         regex = re.compile(pattern)
@@ -189,14 +181,10 @@ def read_file(repo_root: Path, path: str, start_line: int | None = None, end_lin
     truncated = len(lines) > _MAX_READ_LINES
     shown = lines[:_MAX_READ_LINES]
 
-    # Every line carries its real number. Without this a specialist that has
-    # the file open still has to COUNT to report where something is, and
-    # counting is what it gets wrong: one review placed a finding on line 74,
-    # which is blank, when the offending call was on 75.
-    #
-    # The number is not decoration. It is the answer to the only question the
-    # model cannot work out reliably on its own, and it costs about six
-    # characters a line to hand it over.
+    # Every line carries its real number. Without it a specialist with the file
+    # open still has to COUNT, and counting is what it gets wrong — one review
+    # placed a finding on line 74, which is blank; the call was on 75. Six
+    # characters a line to answer the one question it cannot work out itself.
     body = "\n".join(f"{first + i:>5} | {line}" for i, line in enumerate(shown))
     if truncated:
         body += f"\n... truncated at {_MAX_READ_LINES} lines; request a narrower range."

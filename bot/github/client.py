@@ -1,13 +1,12 @@
 """The GitHub REST calls the bot makes, as the bot.
 
-Only the handful it needs. Each takes an installation id and mints (or reuses)
-a token for it, so a caller never handles credentials directly.
+Each takes an installation id and mints or reuses a token, so a caller never
+handles credentials.
 
-Note which endpoints are used for what, because GitHub's naming is a trap: a
-comment in a pull request's conversation box is an *issue* comment, because
-pull requests are issues in GitHub's data model. A comment on a line of code is
-a *review* comment and lives inside a review. The two have different endpoints,
-different reaction endpoints, and different webhook events.
+GitHub's naming is a trap: a comment in a pull request's conversation box is an
+*issue* comment, because PRs are issues in its data model. A comment on a line
+is a *review* comment, inside a review. Different endpoints, different reaction
+endpoints, different webhook events.
 """
 
 from __future__ import annotations
@@ -166,6 +165,29 @@ query($owner:String!, $repo:String!, $number:Int!) {
 """
 
 
+async def review_threads(
+    installation_id: int, owner: str, repo: str, pr_number: int
+) -> list[dict[str, Any]]:
+    """Every review thread, with its resolution state and root comment id.
+
+    One query instead of one per thread. `find_review_thread` ran the same
+    query for each thread it wanted, which cost six round trips on a pull
+    request with six findings.
+    """
+    data = await _graphql(
+        installation_id, _THREAD_FOR_COMMENT, owner=owner, repo=repo, number=pr_number
+    )
+    out = []
+    for thread in data["repository"]["pullRequest"]["reviewThreads"]["nodes"]:
+        first = (thread["comments"]["nodes"] or [{}])[0]
+        out.append({
+            "id": thread["id"],
+            "isResolved": thread["isResolved"],
+            "root_id": first.get("databaseId"),
+        })
+    return out
+
+
 async def find_review_thread(
     installation_id: int, owner: str, repo: str, pr_number: int, root_comment_id: int
 ) -> dict[str, Any] | None:
@@ -268,6 +290,22 @@ async def create_review_comment(
             payload[key] = value
     return await _request(
         installation_id, "POST", f"/repos/{owner}/{repo}/pulls/{pr_number}/comments", json=payload
+    )
+
+
+async def list_reviews(
+    installation_id: int, owner: str, repo: str, pr_number: int
+) -> list[dict[str, Any]]:
+    """Every review on the pull request, ours and everyone else's.
+
+    Each carries the ``commit_id`` it was posted against, which is how we know
+    whether we have already reviewed the current head. Reviews are the right
+    record for that rather than comments: a review with no findings still
+    leaves a review, so a clean pull request is not mistaken for an unreviewed
+    one.
+    """
+    return await _request(
+        installation_id, "GET", f"/repos/{owner}/{repo}/pulls/{pr_number}/reviews?per_page=100"
     )
 
 

@@ -1,28 +1,13 @@
 """Put the pull request's code on disk, so specialists can actually read it.
 
-Why this exists, in one measurement: reviewing through GitHub's API, three
-specialists made 18 `get_file_contents` calls and opened **one** file between
-them, and all four `search_code` calls returned nothing. Every finding came
-from the diff text alone.
+Measured against the GitHub API: three specialists made 18 file-content calls,
+opened one file between them, and every `search_code` returned nothing —
+`search_code` has no `ref`, so it searches the default branch as last indexed
+and can never see the code under review. A checkout makes grep a filesystem
+walk over exactly the commit being reviewed.
 
-Two limits of the API caused that, and neither is fixable with prompting:
-
-* `search_code` has no `ref` parameter. It searches the repository's default
-  branch, from whenever GitHub last indexed it — so it can never search the
-  code in the pull request, which is the code under review.
-* Reading is one network round trip per file, against a rate limit, with no
-  way to grep.
-
-With a checkout, `grep` is a filesystem walk over exactly the commit being
-reviewed. It works on a repository pushed ten seconds ago.
-
-**This clones to read, never to execute.** Nothing here runs anything from the
-repository — no build, no tests, no hooks — so none of the risk of executing an
-untrusted contributor's code applies. `git checkout` does not run repository
-code, and the fetch is pinned to one commit.
-
-The checkout's lifetime is the review. It is a cache, never state: deleting it
-at any moment is safe, and re-creating it is one fetch.
+**Clones to read, never to execute** — no build, no tests, no hooks. The
+checkout lives for one review; it is a cache, never state.
 """
 
 from __future__ import annotations
@@ -76,15 +61,14 @@ def _redact(text: str) -> str:
 async def checkout(owner: str, repo: str, head_sha: str, token: str):
     """Yield a directory containing ``head_sha``, and remove it afterwards.
 
-    Fetched by SHA at depth 1 rather than cloned: one commit, no history, no
-    other branches. That is both the fastest option and the narrowest — the
-    working tree cannot contain a commit other than the one under review, so a
-    specialist cannot accidentally read the wrong version of a file.
+    Fetched by SHA at depth 1: one commit, no history, no other branches — the
+    fastest option and the narrowest, since the tree cannot hold a version of a
+    file other than the one under review.
     """
     root = Path(tempfile.mkdtemp(prefix=f"reviewer-{repo}-"))
     try:
-        # The token goes in the remote URL rather than a header so it never
-        # reaches a config file or the reflog. The directory is removed below.
+        # Token in the URL, not a header, so it never reaches a config file
+        # or the reflog. The directory is removed below.
         url = f"https://x-access-token:{token}@github.com/{owner}/{repo}.git"
 
         await _git("init", "--quiet", str(root))
@@ -92,8 +76,7 @@ async def checkout(owner: str, repo: str, head_sha: str, token: str):
         await _git("fetch", "--quiet", "--depth", "1", "origin", head_sha, cwd=root)
         await _git("checkout", "--quiet", "FETCH_HEAD", cwd=root)
 
-        # Prove we have what we think we have. A silently wrong commit would
-        # mean reviewing different code from the diff, with no visible error.
+        # A silently wrong commit means reviewing different code from the diff.
         actual = (await _git("rev-parse", "HEAD", cwd=root)).strip()
         if actual != head_sha:
             raise WorkspaceError(f"checked out {actual[:8]}, expected {head_sha[:8]}")

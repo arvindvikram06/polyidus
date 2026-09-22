@@ -1,16 +1,12 @@
 """Postgres access: the delivery ledger and the job queue.
 
-Two things worth knowing about the design here.
+``record_delivery`` relies on a unique-violation rather than SELECT-then-INSERT:
+retried delivery IDs arrive concurrently, and a check followed by an insert has
+a race between them.
 
-``record_delivery`` relies on a unique-violation rather than a SELECT-then-
-INSERT. GitHub's delivery IDs arrive concurrently when it retries, and a check
-followed by an insert has a race between them; letting the primary key reject
-the duplicate does not.
-
-``claim_job`` uses ``FOR UPDATE SKIP LOCKED``, which is what makes the queue
-safe for several workers. Each transaction locks the row it takes and skips
-rows already locked, so two workers never claim the same job and neither waits
-for the other.
+``claim_job`` uses ``FOR UPDATE SKIP LOCKED``, which makes the queue safe for
+several workers — each locks the row it takes and skips locked ones, so two
+workers never claim the same job and neither waits.
 """
 
 from __future__ import annotations
@@ -143,6 +139,34 @@ async def claim_job(worker_id: str) -> asyncpg.Record | None:
             row["id"],
             worker_id,
         )
+
+
+async def defer_job(job_id: int, reason: str) -> int:
+    """Put a job back because another worker holds its pull request.
+
+    Not a failure, so it must not cost an attempt. It used to go through
+    `finish_job`, which counts attempts — three quick deferrals in the same
+    second killed the job, and an interrupted worker's stale lock therefore ate
+    the next two review requests as well.
+
+    Returns the running deferral count, which the caller uses to give up
+    eventually: a lock nobody will ever release must not keep a job alive for
+    ever, and the lock's own TTL can be 40 minutes away.
+    """
+    async with (await pool()).acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            UPDATE jobs
+               SET status = 'queued', claimed_by = NULL, claimed_at = NULL,
+                   attempts = GREATEST(attempts - 1, 0), error = $2,
+                   deferrals = deferrals + 1
+             WHERE id = $1
+            RETURNING deferrals
+            """,
+            job_id,
+            reason[:2000],
+        )
+    return row["deferrals"] if row else 0
 
 
 async def finish_job(job_id: int, *, error: str | None = None) -> None:

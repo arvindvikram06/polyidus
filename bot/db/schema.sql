@@ -71,6 +71,11 @@ CREATE TABLE jobs (
     payload      JSONB       NOT NULL,      -- the raw webhook body
 
     attempts     INTEGER     NOT NULL DEFAULT 0,
+    -- Counted separately from attempts. A deferral means another worker holds
+    -- this pull request, which is not the job's fault and must not spend an
+    -- attempt — but it still needs a ceiling, or a lock nobody releases keeps
+    -- the job alive for ever.
+    deferrals    INTEGER     NOT NULL DEFAULT 0,
     claimed_by   TEXT,                      -- WORKER_ID
     claimed_at   TIMESTAMPTZ,
     finished_at  TIMESTAMPTZ,

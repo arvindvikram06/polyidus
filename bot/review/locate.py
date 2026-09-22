@@ -1,29 +1,22 @@
 """Turn a quoted source line into a real line number, using the checkout.
 
-Specialists were asked to *count* lines through diff hunk headers. That is
-arithmetic, and the measurements were bad: on one review a catch block at lines
-77-80 was reported as 65-68, and two findings gave 17-18 and 11-12 for the same
-pair of constants at 16-17 — contradicting each other inside a single review.
+Counting lines through hunk headers is arithmetic, and the measurements were
+bad: a catch block at 77-80 reported as 65-68, and two findings giving 17-18 and
+11-12 for the same constants at 16-17. The same review cited
+``ProductService.cs:57-70`` exactly — because the specialist had *opened* it.
 
-The same review contained an exact cross-file reference,
-``ProductService.cs:57-70``, because the specialist had *opened that file*.
-Reading gives exact positions; counting does not.
-
-So the schema now asks for the offending line copied verbatim, and this module
-finds that string in the checked-out file. Copying is something models do
-reliably; searching is something we do exactly.
+So the schema asks for the offending line copied verbatim and this module finds
+that string. Copying is reliable; searching is exact.
 
 Three rules, in order:
 
-1. If the quote appears exactly once in the file, that is the line. Done.
-2. If it appears several times — a repeated `}` or a common assignment — prefer
-   a line the pull request actually touched, then use the model's own
-   ``line_range`` as a tie-breaker. Its absolute counting is untrustworthy; as
-   a hint about *which* of several identical lines it meant, it is fine.
-3. If it appears nowhere, the specialist is wrong about the location. Report
-   nothing rather than a guess: a comment on unrelated code is worse than one
-   attached to the file, and GitHub will not catch it because it only rejects
-   lines outside the diff entirely.
+1. One match in the file — that is the line.
+2. Several matches (a repeated `}`, a common assignment) — prefer a line the PR
+   touched, then use the model's ``line_range`` as a tie-breaker. Untrustworthy
+   as an absolute, fine as a hint about *which* identical line it meant.
+3. No match — the specialist is wrong about the location. Report nothing: a
+   comment on unrelated code is worse than one attached to the file, and GitHub
+   only rejects lines outside the diff entirely.
 """
 
 from __future__ import annotations
@@ -37,8 +30,7 @@ from reviewer.models.anchor import FileHunks
 
 log = logging.getLogger("bot.review.locate")
 
-# A quote this short matches everything — a lone brace, `else`, `try`. Resolving
-# one tells us nothing, so it is treated as no quote at all.
+# A lone brace, `else`, `try` — matches everything, so treated as no quote.
 _MIN_QUOTE_LENGTH = 8
 
 
@@ -55,9 +47,8 @@ class Located:
 def _normalise(text: str) -> str:
     """Compare on content, not formatting.
 
-    Leading `+`/`-` because a specialist may copy straight out of the diff;
-    whitespace because indentation is the thing most likely to be re-emitted
-    slightly differently.
+    Leading `+`/`-` because a specialist may copy from the diff; whitespace
+    because indentation is most likely to be re-emitted differently.
     """
     stripped = text.strip()
     if stripped[:1] in {"+", "-"}:
@@ -69,8 +60,8 @@ def _normalise(text: str) -> str:
 def _find_block(haystack: list[str], needle: list[str]) -> int | None:
     """Line number where ``needle`` appears as consecutive lines, or None.
 
-    Returns the FIRST line of the match: a comment on a multi-line statement
-    belongs at its start, which is where a reader looks.
+    Returns the FIRST line: a comment on a multi-line statement belongs at its
+    start, where a reader looks.
     """
     if not needle or len(needle) > len(haystack):
         return None
@@ -103,10 +94,9 @@ def locate(
         return Located(None, "no usable quote")
 
     if len(wanted) > 1:
-        # A statement split across lines — a chained SQL concatenation, a
-        # multi-line method signature. Asked for "the line this is about", a
-        # specialist reasonably quotes the whole thing, and matching it against
-        # single lines finds nothing. Anchor such a quote at its first line.
+        # A statement split across lines. Asked for "the line this is about" a
+        # specialist reasonably quotes the whole thing, which matches no single
+        # line — so anchor it at its first.
         span = _find_block(normalised, wanted)
         if span is not None:
             return Located(span, f"{len(wanted)}-line block matched")
@@ -123,9 +113,8 @@ def locate(
     matches = [i for i, line in enumerate(normalised, start=1) if line == target]
 
     if not matches:
-        # Worth distinguishing in the log: a quote that is nowhere in the file
-        # usually means the specialist named the wrong file, which is a
-        # different problem from a quote that is merely ambiguous.
+        # A quote nowhere in the file usually means the wrong file was named —
+        # a different problem from an ambiguous one.
         return Located(None, "quote not found in the file")
 
     if len(matches) == 1:
@@ -141,8 +130,7 @@ def locate(
         candidates = matches
 
     if hint:
-        # The model's counting is unreliable in absolute terms but fine as a
-        # hint about which of several identical lines it meant.
+        # Unreliable as an absolute, fine as a hint about which identical line.
         nearest = min(candidates, key=lambda n: abs(n - hint[0]))
         return Located(nearest, f"{len(matches)} matches, nearest to the reported line")
 
@@ -152,11 +140,9 @@ def locate(
 def _has_content(repo_root: Path, file_path: str, line: int) -> bool:
     """Is there actually code on that line?
 
-    A finding is never *about* a blank line, so a reported number that lands on
-    one is off by a line or two. Measured: asked to count, a model placed
-    "SaveChangesAsync is inside a loop" on line 74 — which is empty; the call is
-    on 75. Refusing here costs one file-level comment and prevents a confident
-    remark pointing at nothing.
+    A finding is never *about* a blank line, so a number landing on one is off.
+    Measured: "SaveChangesAsync is inside a loop" placed on line 74, which is
+    empty; the call is on 75.
     """
     try:
         lines = (Path(repo_root) / file_path).read_text(errors="ignore").splitlines()
@@ -170,14 +156,12 @@ def resolve_line_ranges(
 ) -> dict[str, int]:
     """Replace each finding's ``line_range`` with one derived from its quote.
 
-    Mutates in place and returns a tally of outcomes for logging. The model's
-    own ``line_range`` survives only where no quote could be resolved — it is a
-    fallback, not the mechanism.
+    Mutates in place and returns a tally for logging. The model's own
+    ``line_range`` survives only where no quote resolved — a fallback, not the
+    mechanism.
     """
-    # `agreed` / `corrected` are the experiment: how often the line the model
-    # counted from the diff header matches the line its quote actually sits on.
-    # That ratio is the whole case for doing the search ourselves, and it can
-    # only be measured while both numbers exist.
+    # `agreed`/`corrected` measure how often the counted line matches where the
+    # quote actually sits — the whole case for searching ourselves.
     tally = {"quoted": 0, "kept_model_line": 0, "no_line": 0, "agreed": 0, "corrected": 0}
 
     for finding in findings:
@@ -198,8 +182,7 @@ def resolve_line_ranges(
                 tally["agreed"] += 1
             else:
                 tally["corrected"] += 1
-                # The measurement that justifies this module. Logged every time
-                # so the size of the correction stays visible.
+                # Logged every time, so the size of the correction stays visible.
                 log.info(
                     "located %s:%s by quote (%s) — the specialist counted %s, off by %+d",
                     finding.file_path, found.line, found.reason,
@@ -207,25 +190,20 @@ def resolve_line_ranges(
                 )
         elif finding.line_range and _has_content(repo_root, finding.file_path,
                                                  finding.line_range[0]):
-            # The quote could not be resolved — usually because it is a `catch`
-            # or a brace, too common to identify a place. The reported number
-            # carries it instead: `read_file` prints line numbers in the margin,
-            # so that number was read rather than counted.
+            # Unresolvable quote, usually a `catch` or a brace. The reported
+            # number carries it: `read_file` prints margins, so it was read.
             tally["kept_model_line"] += 1
             log.info(
                 "%s: %s, using the reported line %s",
                 finding.file_path, found.reason, finding.line_range[0],
             )
         else:
-            # Clear it. A number we have just refused must not survive into
-            # `anchor_findings`, which would place a comment on it regardless.
+            # A number we just refused must not reach `anchor_findings`.
             finding.line_range = None
             tally["no_line"] += 1
-            # Silence here was a real cost: one run placed nothing on a line
-            # and the tally said `no_line: 12` without saying why. The two
-            # causes need different fixes — a missing quote is a prompt or
-            # schema problem, a quote that does not match is a model copying
-            # the code wrong — so they are worth distinguishing in the log.
+            # One run reported `no_line: 12` without saying why. The causes need
+            # different fixes: a missing quote is a prompt or schema problem, a
+            # non-matching one is the model copying the code wrong.
             quote = getattr(finding, "offending_line", None)
             log.warning(
                 "%s: no line for %r — %s%s",

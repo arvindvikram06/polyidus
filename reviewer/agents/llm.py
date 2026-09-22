@@ -10,8 +10,7 @@ class LLMError(Exception):
 
 
 def get_chat_model(model: str) -> Any:
-    # Imported lazily so the rest of the package stays importable (and unit
-    # testable) without a provider SDK installed.
+    # Lazy so the package stays importable without a provider SDK.
     from langchain_openai import ChatOpenAI
 
     kwargs: dict[str, Any] = {"model": model}

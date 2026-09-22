@@ -1,14 +1,11 @@
 """The worker: claims jobs and does the slow work GitHub would not wait for.
 
-A review takes minutes; a webhook gets about ten seconds. So the API server
-writes a job row and returns, and this process picks it up. That split is the
-entire reason Postgres is in this project — it holds no review state, only
-work that must survive a crash.
+A review takes minutes; a webhook gets ~10s. The API writes a job row and
+returns, this process picks it up. That split is the entire reason Postgres is
+here — it holds no review state, only work that must survive a crash.
 
-The loop itself is deliberately dull: claim, lock, handle, release. Almost
-every plumbing failure (signature, replay, loop guard, the ten-second
-response) produces symptoms that look like a broken agent, so the plumbing is
-kept boring enough to rule out.
+The loop is deliberately dull (claim, lock, handle, release): plumbing failures
+mimic a broken agent, so the plumbing stays boring enough to rule out.
 
     python -m bot.worker
 """
@@ -19,6 +16,7 @@ import asyncio
 import contextlib
 import logging
 import signal
+from typing import Any
 
 import asyncpg
 
@@ -29,6 +27,7 @@ from bot.review.local_tools import repo_tools
 from bot.review.recheck import recheck
 from bot.review.run import review_pull_request
 from bot.workspace import checkout
+from reviewer import config as reviewer_config
 
 logging.basicConfig(
     level=logging.INFO,
@@ -45,12 +44,35 @@ async def handle_review(job: asyncpg.Record) -> None:
     owner, repo, pr = job["owner"], job["repo"], job["pr_number"]
     inst = job["installation_id"]
 
-    # Acknowledge first, and fast. From the human's side, nothing has happened
-    # since they pressed enter; without a signal they assume it is broken and
-    # comment again, which queues a second job.
-    if job["trigger_comment_id"]:
+    # Acknowledge fast: without a signal the human assumes it is broken and
+    # comments again, queueing a second job.
+    if job["trigger_comment_id"] and not config.DRY_RUN:
         with contextlib.suppress(client.GitHubError):
             await client.react_to_issue_comment(inst, owner, repo, job["trigger_comment_id"])
+
+    # Nothing to do if the head has not moved: same commit, same findings, and
+    # a second copy of every comment. Reviews carry the commit they were posted
+    # against, and a clean review still leaves one — hence reviews, not comments.
+    pull = await client.get_pull(inst, owner, repo, pr)
+    head_sha = pull["head"]["sha"]
+    if not job["payload"].get("_force") and not config.DRY_RUN:
+        reviewed = {
+            r.get("commit_id")
+            for r in await client.list_reviews(inst, owner, repo, pr)
+            if (r.get("user") or {}).get("login") == config.BOT_LOGIN
+        }
+        if head_sha in reviewed:
+            log.info("review %s/%s#%s: %s already reviewed, skipping",
+                     owner, repo, pr, head_sha[:8])
+            await client.post_issue_comment(
+                inst, owner, repo, pr,
+                f"**Already reviewed `{head_sha[:8]}`** — no new commits since the "
+                "last review, so nothing has changed to look at.\n\n"
+                "Push a change and tag me again, or say `@polyidus-bot review force` "
+                "to re-run against the same commit.\n\n"
+                f"<sub>requested by @{job['requested_by']}</sub>",
+            )
+            return
 
     outcome = await review_pull_request(
         installation_id=inst,
@@ -61,6 +83,8 @@ async def handle_review(job: asyncpg.Record) -> None:
 
     if not outcome.ran:
         log.info("review %s/%s#%s skipped: %s", owner, repo, pr, outcome.skipped)
+        if config.DRY_RUN:
+            return
         await client.post_issue_comment(
             inst, owner, repo, pr,
             f"**Nothing to review** — {outcome.skipped}.\n\n"
@@ -73,12 +97,32 @@ async def handle_review(job: asyncpg.Record) -> None:
         owner, repo, pr, len(outcome.findings), outcome.anchored,
     )
 
-    # Every finding goes inline, on the line it is about; the summary carries
-    # none. An inline comment is a resolvable thread, and that thread is the
-    # record — it holds the finding, any reply, and the eventual decision,
-    # which a bulleted list in one comment cannot.
+    # Read from GitHub, not a table of ours: the comment a human can see is the
+    # record, and a second copy could disagree with it.
+    existing = await client.list_review_comments(inst, owner, repo, pr)
+    roots = [c for c in existing if not c.get("in_reply_to_id")
+             and (c.get("user") or {}).get("login") == config.BOT_LOGIN]
+
+    findings, already = publish.split_already_said(
+        outcome.findings, [c.get("body") or "" for c in roots]
+    )
+    if already:
+        log.info(
+            "%s/%s#%s: %d finding(s) already have a thread, not repeating",
+            owner, repo, pr, len(already),
+        )
+
+    # No "looks fixed" replies. They used to fire whenever a marker went missing
+    # from a run's findings, which put "looks fixed" on a live SQL injection the
+    # specialist had merely reworded. Absence is not evidence: claiming a fix
+    # needs a specialist to open the file (see bot/review/history.py), and until
+    # that is threaded back through, nothing here claims one.
+    resolved, marked_fixed = 0, 0
+
+    # Every finding inline, none in the summary: an inline comment is a
+    # resolvable thread, and the thread is the record.
     line_comments, file_comments, unplaceable, held_back = publish.build_comments(
-        outcome.findings, outcome.agreed_by
+        findings, outcome.agreed_by
     )
     body = publish.summary_body(
         head_sha=outcome.head_sha,
@@ -87,10 +131,17 @@ async def handle_review(job: asyncpg.Record) -> None:
         requested_by=job["requested_by"],
         unplaceable=unplaceable,
         held_back=held_back,
+        already_said=len(already),
+        resolved=resolved,
+        marked_fixed=marked_fixed,
         overview=outcome.summary_text,
         aborted=outcome.aborted,
         failed_specialists=outcome.failed_specialists,
     )
+    if config.DRY_RUN:
+        _print_dry_run(owner, repo, pr, body, line_comments, file_comments, unplaceable)
+        return
+
     accepted, rejected = await publish.post_review(
         inst, owner, repo, pr,
         body=body,
@@ -102,14 +153,13 @@ async def handle_review(job: asyncpg.Record) -> None:
         log.warning("comment on %s rejected: %s", comment.get("path"), reason)
     log.info(
         "posted %s/%s#%s: %d on a line, %d file-level, %d unplaceable, "
-        "%d held back, %d rejected",
+        "%d held back, %d rejected, %d already said, %d resolved, %d marked fixed",
         owner, repo, pr, len(line_comments), len(file_comments),
-        len(unplaceable), held_back, len(rejected),
+        len(unplaceable), held_back, len(rejected), len(already), resolved, marked_fixed,
     )
     if accepted and not line_comments:
-        # Worth shouting about. Every finding landed at file level, which means
-        # the quote-and-locate path produced nothing usable — the review is
-        # still correct but it reads as a pile of file comments.
+        # Every finding landed at file level, so the quote-and-locate path
+        # produced nothing usable. Correct, but it reads as a pile.
         log.warning(
             "%s/%s#%s: NOTHING anchored to a line. Check the 'line numbers' "
             "tally above for why.", owner, repo, pr,
@@ -119,23 +169,19 @@ async def handle_review(job: asyncpg.Record) -> None:
 async def handle_dispute(job: asyncpg.Record) -> None:
     """A human replied to one of our inline comments. Answer them.
 
-    The thread is the whole record. Its root comment IS the finding — file,
-    line and text — so there is nothing to look up and no table to consult.
-    That is what posting findings inline bought us.
+    The root comment IS the finding — file, line and text — so there is nothing
+    to look up and no table to consult.
     """
     owner, repo, pr = job["owner"], job["repo"], job["pr_number"]
     inst = job["installation_id"]
     reply_id = job["trigger_comment_id"]
 
-    # Fetch before reacting. A human who posts and then deletes leaves a
-    # delivery for a comment that no longer exists, and reacting to it first
-    # only produces a 403 on the way to the same 404.
+    # Fetch before reacting: a deleted comment gives a 403 on the way to a 404.
     try:
         reply = await client.get_review_comment(inst, owner, repo, reply_id)
     except client.GitHubError as exc:
         if "404" in str(exc):
-            # Withdrawn before we got to it. Not a failure — retrying three
-            # times and marking the job dead is noise about a non-event.
+            # Withdrawn before we got to it. Not a failure worth three retries.
             log.info("dispute %s: the comment was deleted, nothing to answer", reply_id)
             return
         raise
@@ -174,26 +220,56 @@ async def handle_dispute(job: asyncpg.Record) -> None:
 
     conceded = verdict.outcome == "concede"
     prefix = "**Withdrawn.**" if conceded else "**Still stands.**"
+    if config.DRY_RUN:
+        log.info("[dry run] would reply on %s: %s %s",
+                 root["path"], prefix, verdict.reasoning)
+        return
     await client.reply_to_review_comment(
         inst, owner, repo, pr, root_id, f"{prefix} {verdict.reasoning}"
     )
 
     if conceded:
-        # Resolving is the concession made durable: the thread collapses, and
-        # a later run reading threads back can see it was settled. REST cannot
-        # do this, which is the only reason there is any GraphQL here.
+        # The concession made durable: the thread collapses and a later run can
+        # see it was settled. REST cannot do this — the only reason for GraphQL.
         try:
             thread = await client.find_review_thread(inst, owner, repo, pr, root_id)
             if thread and not thread["isResolved"]:
                 await client.resolve_review_thread(inst, thread["id"])
         except client.GitHubError as exc:
-            # The reply already posted, so the human has their answer. A failed
-            # resolve leaves the thread open — untidy, not wrong.
+            # The reply is posted, so they have their answer. An open thread
+            # is untidy, not wrong.
             log.warning("could not resolve thread for comment %s: %s", root_id, exc)
 
     log.info(
         "dispute %s/%s#%s by @%s on %s: %s",
         owner, repo, pr, job["requested_by"], root["path"], verdict.outcome,
+    )
+
+
+def _print_dry_run(
+    owner: str, repo: str, pr: int,
+    body: str, line_comments: list[dict], file_comments: list[dict],
+    unplaceable: list[Any],
+) -> None:
+    """Show the review instead of posting it.
+
+    Printed in full: the wording is the product, and a count says nothing about
+    whether it is worth reading.
+    """
+    rule = "─" * 72
+    print(f"\n{rule}\n  DRY RUN — nothing was posted to {owner}/{repo}#{pr}\n{rule}")
+    print(f"\n[summary comment]\n{body}")
+    for kind, comments in (("on a line", line_comments), ("file-level", file_comments)):
+        for comment in comments:
+            where = comment.get("path", "?")
+            if comment.get("line"):
+                where += f":{comment['line']}"
+            print(f"\n[{kind}] {where}\n{comment.get('body', '')}")
+    for finding in unplaceable:
+        print(f"\n[no line found] {finding.file_path} — {finding.title}")
+    print(
+        f"\n{rule}\n  {len(line_comments)} on a line · {len(file_comments)} file-level · "
+        f"{len(unplaceable)} unplaceable\n{rule}\n"
     )
 
 
@@ -210,10 +286,21 @@ async def run_job(job: asyncpg.Record) -> None:
         await db.finish_job(job["id"])
         log.info("%s done", label)
     except locks.LockBusy as exc:
-        # Not a failure. Another worker has this PR; put it back and let it be
-        # picked up once that one finishes.
-        log.info("%s deferred: %s", label, exc)
-        await db.finish_job(job["id"], error=f"deferred: {exc}")
+        # Not a failure: another worker has this PR, so requeue without spending
+        # an attempt. The ceiling matters — a lock left by a killed worker can
+        # have 40 minutes of TTL, and this logged once a second until noticed.
+        count = await db.defer_job(job["id"], f"deferred: {exc}")
+        if count >= config.MAX_JOB_DEFERRALS:
+            log.warning(
+                "%s deferred %d times and gave up — the lock is probably stale: %s",
+                label, count, exc,
+            )
+            await db.finish_job(
+                job["id"], error=f"gave up after {count} deferrals: {exc}"
+            )
+            return
+        log.info("%s deferred (%d): %s", label, count, exc)
+        await asyncio.sleep(config.DEFER_BACKOFF_SECONDS)
     except Exception as exc:  # one bad job must not kill the loop
         log.exception("%s failed", label)
         await db.finish_job(job["id"], error=f"{type(exc).__name__}: {exc}")
@@ -232,6 +319,9 @@ async def main() -> None:
         config.DATABASE_URL.split("@")[-1],
         config.REDIS_URL,
     )
+    # Switching profiles changes every finding, so it must never be a guess
+    # when comparing two runs.
+    log.info("model backend — %s", reviewer_config.llm_summary())
     await db.pool()
 
     idle_logged = False

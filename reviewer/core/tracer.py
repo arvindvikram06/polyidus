@@ -1,12 +1,10 @@
 """Tracing for the review pipeline.
 
-Nothing about a worker is printed while it runs. Specialists run concurrently,
-so live output interleaves into noise and needs locks and per-run buffers to
-untangle. Instead each run simply *collects* what it did, and everything is
-rendered once, in order, when the review ends.
+Nothing is printed while a worker runs: concurrent specialists interleave into
+noise. Each run collects what it did, and everything renders once, in order,
+when the review ends.
 
-The only live output is the dispatch plan, which is worth seeing immediately
-because it tells you what the review is about to do.
+The one live exception is the dispatch plan — it says what is about to happen.
 """
 
 from __future__ import annotations
@@ -102,6 +100,11 @@ class Tracer:
         self._rejections.clear()
         self._routing = ""
 
+    @property
+    def runs(self) -> list[_Run]:
+        """Completed specialist runs, for a caller that wants to report on them."""
+        return list(self._runs)
+
     def _print(self, *args: Any, **kwargs: Any) -> None:
         if self.level > QUIET:
             self._console.print(*args, **kwargs)
@@ -194,8 +197,12 @@ class Tracer:
         )
         for agent, scope, task in tasks:
             self._print(f"      [bold]{agent}[/] [dim]{_short_scope(scope)}[/]")
-            if self.level >= VERBOSE:
-                self._print(f"        [dim]{task}[/]")
+            # Always shown, not only when verbose. The task is the strongest
+            # lever on what a specialist reports: the same specialist on the
+            # same file gave 7 findings for a specific instruction and 2 for a
+            # vague one — the biggest cause of a thin review.
+            if task:
+                self._print(f"        [dim]↳ {task}[/]")
 
     # -- the summary, rendered once at the end ---------------------------
 
@@ -232,13 +239,15 @@ class Tracer:
         if run.error:
             head = (
                 f"[red]✗[/] [bold]{run.agent}[/] [dim]{_short_scope(run.scope)}[/] "
-                f"[red]failed: {run.error}[/] [dim]{run.elapsed:.1f}s[/]"
+                f"[red]failed: {run.error}[/] [dim]{len(run.tool_calls)} calls · "
+                f"{run.elapsed:.1f}s[/]"
             )
         else:
             noun = "finding" if len(run.findings) == 1 else "findings"
             head = (
                 f"[green]✓[/] [bold]{run.agent}[/] [dim]{_short_scope(run.scope)}[/] "
-                f"{len(run.findings)} {noun} [dim]{run.elapsed:.1f}s[/]"
+                f"{len(run.findings)} {noun} [dim]{len(run.tool_calls)} calls · "
+                f"{run.elapsed:.1f}s[/]"
             )
         node = Tree(head)
         for call in run.tool_calls:

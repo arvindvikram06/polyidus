@@ -1,13 +1,8 @@
-"""The webhook endpoint. Fast, suspicious, and does no real work.
+"""The webhook endpoint: validate, write a job row, answer. Target <100ms.
 
-GitHub POSTs here and *waits on the connection* for a response. It gives up
-after roughly ten seconds and records the delivery as failed — then retries.
-A review takes minutes, so doing the review inside this handler means GitHub
-hangs up, retries, and a second review starts while the first is still
-running: double the cost, duplicate comments.
-
-So the contract for everything in this file is: validate, write a row, answer.
-Target is under 100ms. The worker does the rest, after GitHub has gone.
+GitHub waits on the connection and gives up after ~10s, then retries. A review
+takes minutes, so reviewing here would mean duplicate concurrent reviews. The
+worker does the real work.
 """
 
 from __future__ import annotations
@@ -30,8 +25,7 @@ app = FastAPI(title="reviewer-bot", docs_url=None, redoc_url=None)
 async def startup() -> None:
     problems = config.check()
     if problems:
-        # Loud, but not fatal: the endpoint should still answer so you can see
-        # deliveries arriving while you finish setting things up.
+        # Loud but not fatal — the endpoint should still answer while you finish setup.
         log.error("configuration incomplete: %s", "; ".join(problems))
     await db.pool()
     log.info("api up — bot login %r, trigger %r", config.BOT_LOGIN, config.TRIGGER)
@@ -57,11 +51,8 @@ async def health() -> dict[str, Any]:
 def verify_signature(raw: bytes, header: str | None) -> bool:
     """HMAC-SHA256 over the RAW REQUEST BODY.
 
-    The single most common way to get this wrong is to verify against
-    re-serialized JSON. `json.dumps(json.loads(raw))` is not `raw` — key order,
-    spacing and unicode escaping all differ — so the digest never matches and
-    every delivery 401s. Hence `raw` is passed around as bytes and only parsed
-    after this returns True.
+    Never verify against re-serialized JSON: `json.dumps(json.loads(raw))` differs
+    from `raw` in key order, spacing and unicode escaping, so every delivery 401s.
     """
     if not config.WEBHOOK_SECRET:
         log.error("GITHUB_WEBHOOK_SECRET is not set; refusing every delivery")
@@ -87,13 +78,18 @@ def classify(event: str, payload: dict[str, Any]) -> tuple[str, dict[str, Any]] 
     # --- a human summoning a review -------------------------------------
     if event == "issue_comment" and action == "created":
         issue = payload.get("issue") or {}
-        # An issue_comment fires for plain issues too. This key is present
-        # ONLY when the issue is a pull request.
+        # issue_comment fires for plain issues too; this key marks a PR.
         if "pull_request" not in issue:
             return None
         comment = payload.get("comment") or {}
-        if config.TRIGGER not in (comment.get("body") or "").lower():
+        body = (comment.get("body") or "").lower()
+        if config.TRIGGER not in body:
             return None
+        # An already-reviewed commit is skipped; `force` overrides that, for
+        # iterating on the reviewer against unchanged code.
+        payload["_force"] = any(
+            word in body for word in ("force", "again", "re-run", "rerun")
+        )
         return "review", {
             "pr_number": issue.get("number"),
             "trigger_comment_id": comment.get("id"),
@@ -104,8 +100,8 @@ def classify(event: str, payload: dict[str, Any]) -> tuple[str, dict[str, Any]] 
     # --- a human disputing a finding ------------------------------------
     if event == "pull_request_review_comment" and action == "created":
         comment = payload.get("comment") or {}
-        # A reply, not a new top-level comment. Whether the thread is one of
-        # OURS is decided in the worker, which can look up the marker.
+        # A reply, not a top-level comment. Whether the thread is ours is
+        # decided in the worker, which can look up the marker.
         if not comment.get("in_reply_to_id"):
             return None
         return "dispute", {
@@ -115,8 +111,7 @@ def classify(event: str, payload: dict[str, Any]) -> tuple[str, dict[str, Any]] 
             "association": (comment.get("author_association") or "").upper(),
         }
 
-    # `pull_request` events are subscribed for later (detecting a push that
-    # invalidates a stored review). Nothing consumes them yet.
+    # `pull_request` events are subscribed but not consumed yet.
     return None
 
 
@@ -141,14 +136,13 @@ async def webhook(
     action = payload.get("action")
     sender = (payload.get("sender") or {}).get("login", "")
 
-    # GUARD 2 — is it us? Our own comments and reactions come back as events.
-    # Without this the bot answers itself in an unbounded loop.
+    # GUARD 2 — is it us? Our own events come back; without this the bot
+    # answers itself forever.
     if config.BOT_LOGIN and sender == config.BOT_LOGIN:
         return _ok(x_github_delivery, "self")
 
-    # GUARD 3 — have we already handled this delivery? GitHub's delivery is
-    # at-least-once, so a repeat is normal rather than an error. Recorded
-    # before the work is decided, so a crash mid-handler cannot double-enqueue.
+    # GUARD 3 — replay. Delivery is at-least-once, so a repeat is normal.
+    # Recorded before the work is decided, so a crash cannot double-enqueue.
     if x_github_delivery:
         first_time = await db.record_delivery(x_github_delivery, event, action)
         if not first_time:
@@ -169,10 +163,8 @@ async def webhook(
         log.warning("delivery %s classified %s but incomplete", x_github_delivery, intent)
         return _ok(x_github_delivery, "incomplete payload")
 
-    # Authority. A human's words become part of an agent instruction, so
-    # whoever can comment could otherwise write the agent's prompt. Checked
-    # here to avoid queueing work we would refuse anyway; the worker checks
-    # again, because a guard worth having is worth having twice.
+    # Authority. A human's words become part of an agent instruction, so anyone
+    # who can comment could otherwise write the prompt. The worker checks again.
     if fields["association"] not in config.ALLOWED_ASSOCIATIONS:
         log.info(
             "ignoring %s from @%s (%s not permitted)",
