@@ -233,10 +233,11 @@ async def run_subagent_review(
         )
         result = await agent.ainvoke(
             {"messages": [HumanMessage(content=user_content)]},
-            # The backstop "end" used to provide, against a model that answers a
-            # refused call by retrying it. NOTE: graph steps are not two per tool
-            # call — a run has died here at 50 calls against this limit. See
-            # docs/OPTIMIZATION_PLAN.md phase 0.
+            # The backstop "end" used to provide, against a model that answers
+            # a refused call by retrying it. Graph steps are NOT two per tool
+            # call, despite the arithmetic here suggesting it — a run has died
+            # against this limit at 50 calls, so raise the multiplier rather
+            # than the tool cap if that happens again.
             {"recursion_limit": max_tool_iterations * 2 + 10},
         )
     except Exception as exc:
