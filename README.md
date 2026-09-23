@@ -219,15 +219,15 @@ entirely.
 
 ---
 
-## 7 · The dispute loop
+## 7 · Disputes, and claiming a fix
 
 ```mermaid
 flowchart LR
     H["a human replies<br/>'this is wrong because…'"]
     Q["is the root ours?<br/>root.user.login == BOT_LOGIN<br/><i>the thread IS the finding</i>"]
     RC["<b>recheck()</b><br/>fresh checkout · same 3 tools<br/><i>reads the code again,<br/>not its own sentence</i>"]
-    HOLD["hold → replies <b>Still stands.</b>"]
-    CON["concede → replies <b>Withdrawn.</b><br/>+ resolve the thread (GraphQL)"]
+    HOLD["hold → replies <b>Still stands.</b><br/><i>thread stays open</i>"]
+    CON["concede → replies <b>Withdrawn.</b><br/>+ resolveReviewThread"]
 
     H --> Q --> RC
     RC --> HOLD
@@ -238,26 +238,40 @@ The human is usually right — **but not automatically**. Their reason is
 evidence, not an instruction: conceding on request would make every finding
 fall to the first objection, including the correct ones.
 
-Resolution is the one thing REST cannot do — `isResolved` lives on
-`PullRequestReviewThread` in GraphQL only. That single gap is the entire reason
-a second protocol appears in this codebase.
+### Claiming a finding is fixed
 
----
+A second review is handed the pull request's own conversation before it plans,
+and instruction 4 in `history.py` is explicit:
 
-## Known defects
+> Dispatch a specialist to open the file and check whether an open finding
+> above has actually been fixed — **say so explicitly if it has**, because a
+> finding that is merely absent from your output is not evidence that it was
+> fixed.
 
-| # | Where | What | Status |
-|---|---|---|---|
-| 0 | `base.py` | `recursion_limit` assumes 2 graph steps per tool call; a run died at 50 calls against a 70 budget, and the raise loses the whole run | Phase 0 |
-| 2 | `files.py:17` | `pom.xml` unreadable on every Java repo; `".xml"` blocks nothing | open |
-| 3 | `recheck.py:121` | `exit_behavior="end"` at 12 calls — an exhausted dispute silently holds | open |
-| 4 | `local_tools.py` | no shared read cache — 63 reads across ~30 distinct files | open |
-| 5 | `config.py` | code defaults disagree with `.env.example` (50 vs 8, 70 vs 15) | open |
-| 6 | `tracer.py` | singleton never resets — the 2nd review in a worker re-renders the 1st's tree and reports elapsed since process start | open |
-| 7 | `diff_context.py` | `slice_diff` silently widens a fully mis-scoped task to the whole diff | open |
-| 9 | `files.py` | ripgrep and the Python fallback return **different results** — `rg` honours `.gitignore`, the walk does not | new |
+So a confirmed fix is reported the same way every other finding is: a
+specialist opens the file, cites what it read in `verified_by`, and the result
+is published as an ordinary comment in its own words.
 
----
+```mermaid
+flowchart LR
+    OLD["an open finding<br/>from a previous review"]
+    ASK["master is told:<br/>check whether it is fixed"]
+    SPEC["a specialist opens the file"]
+    SAY["reports it, with verified_by"]
+    NOTHING["<i>silence</i><br/>absence is NOT evidence"]
+
+    OLD --> ASK --> SPEC --> SAY
+    SPEC -.->|could not confirm| NOTHING
+```
+
+This replaced a mechanism that fired whenever a marker went missing from a
+run's output — which put **"looks fixed" on a live SQL injection** the
+specialist had merely reworded. The difference is the tool call: absence used
+to count as evidence, and now only reading the code does.
+
+> The bot never resolves a thread because it thinks the code was fixed. It
+> resolves one only when **it concedes it was wrong**. Closing a fixed thread
+> stays a human's decision.
 
 ## Running it
 
@@ -276,15 +290,3 @@ is installed on.
 | `REVIEWER_LLM=claude` | swap the backend to a local CLIProxyAPI (see `cliproxy/README.md`) |
 | `BOT_DRY_RUN=1` | print every comment instead of posting it |
 | `@polyidus-bot review force` | re-review a commit already reviewed |
-
----
-
-## Further reading
-
-| Document | What it covers |
-|---|---|
-| [`docs/CODEBASE.md`](docs/CODEBASE.md) | the file-by-file map |
-| [`docs/LEARNINGS.md`](docs/LEARNINGS.md) | the design decisions and what each one cost to learn |
-| [`docs/FINDINGS.md`](docs/FINDINGS.md) | the defect list in full, with evidence |
-| [`docs/OPTIMIZATION_PLAN.md`](docs/OPTIMIZATION_PLAN.md) | the ordered work, and the baseline to measure against |
-| [`docs/BOT_GUIDE.md`](docs/BOT_GUIDE.md) | setup, troubleshooting, and the GitHub App itself |

@@ -112,12 +112,12 @@ async def handle_review(job: asyncpg.Record) -> None:
             owner, repo, pr, len(already),
         )
 
-    # No "looks fixed" replies. They used to fire whenever a marker went missing
-    # from a run's findings, which put "looks fixed" on a live SQL injection the
-    # specialist had merely reworded. Absence is not evidence: claiming a fix
-    # needs a specialist to open the file (see bot/review/history.py), and until
-    # that is threaded back through, nothing here claims one.
-    resolved, marked_fixed = 0, 0
+    # Nothing here claims a finding is fixed. The summary used to count fixes
+    # whenever a marker went missing from a run's output, which put "looks
+    # fixed" on a live SQL injection the specialist had merely reworded.
+    # Absence is not evidence — so confirming a fix is a specialist's job now:
+    # bot/review/history.py tells the master to open the file and check, and
+    # what it finds is reported as an ordinary finding in its own words.
 
     # Every finding inline, none in the summary: an inline comment is a
     # resolvable thread, and the thread is the record.
@@ -132,8 +132,6 @@ async def handle_review(job: asyncpg.Record) -> None:
         unplaceable=unplaceable,
         held_back=held_back,
         already_said=len(already),
-        resolved=resolved,
-        marked_fixed=marked_fixed,
         overview=outcome.summary_text,
         aborted=outcome.aborted,
         failed_specialists=outcome.failed_specialists,
@@ -153,9 +151,9 @@ async def handle_review(job: asyncpg.Record) -> None:
         log.warning("comment on %s rejected: %s", comment.get("path"), reason)
     log.info(
         "posted %s/%s#%s: %d on a line, %d file-level, %d unplaceable, "
-        "%d held back, %d rejected, %d already said, %d resolved, %d marked fixed",
+        "%d held back, %d rejected, %d already said",
         owner, repo, pr, len(line_comments), len(file_comments),
-        len(unplaceable), held_back, len(rejected), len(already), resolved, marked_fixed,
+        len(unplaceable), held_back, len(rejected), len(already),
     )
     if accepted and not line_comments:
         # Every finding landed at file level, so the quote-and-locate path

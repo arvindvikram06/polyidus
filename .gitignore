@@ -51,3 +51,6 @@ cliproxy/config.yaml*
 
 # Management panel the proxy downloads at runtime
 cliproxy/static/
+
+# Working notes on outstanding defects — tracks work in progress, not the project.
+KNOWN_DEFECTS.md
