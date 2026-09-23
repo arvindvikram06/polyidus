@@ -90,8 +90,6 @@ def summary_body(
     unplaceable: list[Finding],
     held_back: int,
     already_said: int = 0,
-    resolved: int = 0,
-    marked_fixed: int = 0,
     overview: str = "",
     aborted: str | None = None,
     failed_specialists: list[str] | None = None,
@@ -104,7 +102,6 @@ def summary_body(
     """
     # A clean review has to SAY it is clean — "0 inline comment(s) posted"
     # followed by a pointer to inline comments reads like a malfunction.
-    settled = resolved + marked_fixed
     clean = posted == 0 and not unplaceable and not aborted and not failed_specialists
     if clean and not already_said:
         headline = (
@@ -115,11 +112,6 @@ def summary_body(
         headline = (
             f"**Nothing new** at `{head_sha[:8]}` — {changed_files} file(s) reviewed. "
             f"{already_said} open finding(s) still stand; no new ones."
-        )
-    elif posted == 0 and settled:
-        headline = (
-            f"**All clear** at `{head_sha[:8]}` — {changed_files} file(s) reviewed, "
-            f"and {settled} earlier finding(s) no longer come up."
         )
     else:
         headline = (
@@ -158,22 +150,6 @@ def summary_body(
             (
                 f"<sub>{already_said} finding(s) already have an open thread and "
                 "were not repeated.</sub>"
-            ),
-            "",
-        ]
-    if resolved:
-        lines += [
-            (
-                f"<sub>✅ {resolved} thread(s) resolved — that code no longer reports "
-                "a problem.</sub>"
-            ),
-            "",
-        ]
-    if marked_fixed:
-        lines += [
-            (
-                f"<sub>✅ {marked_fixed} finding(s) look fixed — each thread has a "
-                "reply saying so. Resolve them when you are happy.</sub>"
             ),
             "",
         ]
