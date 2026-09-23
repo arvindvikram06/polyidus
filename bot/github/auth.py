@@ -1,16 +1,12 @@
 """Authenticating as the App, and as one of its installations.
 
-A GitHub App has no long-lived token. It holds a private key, and the exchange
-goes:
+A GitHub App has no long-lived token, only a private key:
 
     private key ──sign RS256 JWT──▶ /app/installations/{id}/access_tokens
                                     ──▶ installation token, valid ~1 hour
 
-That is a security feature rather than an inconvenience: the key never travels,
-and a leaked installation token expires on its own.
-
-Tokens are cached per installation until shortly before they expire. Minting
-one per API call would spend the installation's rate limit on authentication.
+The key never travels and a leaked token expires on its own. Tokens are cached
+per installation — minting one per call would spend the rate limit on auth.
 """
 
 from __future__ import annotations

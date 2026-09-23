@@ -57,7 +57,7 @@ def _finding(agent: str) -> Finding:
 
 def test_unknown_specialist_is_rejected_not_executed():
     accepted, rejections = _validate_tasks(
-        [SpecialistTask(agent="wizard", task="t")], SPECIALISTS, CHANGED
+        [SpecialistTask(agent="wizard", task="check the token check in login() against the session store it reads")], SPECIALISTS, CHANGED
     )
     assert accepted == []
     assert "unknown specialist 'wizard'" in rejections[0]
@@ -65,7 +65,7 @@ def test_unknown_specialist_is_rejected_not_executed():
 
 def test_paths_outside_the_diff_are_dropped():
     accepted, rejections = _validate_tasks(
-        [SpecialistTask(agent="security", task="t", files=["app/auth.py", "/etc/passwd"])],
+        [SpecialistTask(agent="security", task="check the token check in login() against the session store it reads", files=["app/auth.py", "/etc/passwd"])],
         SPECIALISTS,
         CHANGED,
     )
@@ -75,7 +75,10 @@ def test_paths_outside_the_diff_are_dropped():
 
 def test_batch_is_truncated_at_the_cap(monkeypatch):
     monkeypatch.setattr(master, "MAX_TASKS_PER_BATCH", 2)
-    tasks = [SpecialistTask(agent="security", task=f"t{i}") for i in range(5)]
+    tasks = [
+        SpecialistTask(agent="security", task=f"check the token check in login() against the session store, case {i}")
+        for i in range(5)
+    ]
     accepted, rejections = _validate_tasks(tasks, SPECIALISTS, CHANGED)
     assert len(accepted) == 2
     assert "3 task(s) not run" in rejections[-1]
@@ -84,8 +87,8 @@ def test_batch_is_truncated_at_the_cap(monkeypatch):
 def test_same_specialist_may_appear_twice_with_different_scopes():
     accepted, _ = _validate_tasks(
         [
-            SpecialistTask(agent="security", task="auth", files=["app/auth.py"]),
-            SpecialistTask(agent="security", task="docker", files=["infra/Dockerfile"]),
+            SpecialistTask(agent="security", task="check the token check in login() against the session store it reads", files=["app/auth.py"]),
+            SpecialistTask(agent="security", task="check the base image tag and whether the container runs as root", files=["infra/Dockerfile"]),
         ],
         SPECIALISTS,
         CHANGED,
@@ -112,8 +115,8 @@ def test_batch_runs_tasks_concurrently_and_scopes_each_diff(monkeypatch):
     runs = asyncio.run(
         _run_batch(
             [
-                SpecialistTask(agent="security", task="auth", files=["app/auth.py"]),
-                SpecialistTask(agent="infra", task="image", files=["infra/Dockerfile"]),
+                SpecialistTask(agent="security", task="check the token check in login() against the session store it reads", files=["app/auth.py"]),
+                SpecialistTask(agent="infra", task="check the base image tag and whether the container runs as root", files=["infra/Dockerfile"]),
             ],
             SPECIALISTS,
             CONTEXT,
@@ -144,8 +147,8 @@ def test_concurrent_runs_do_not_share_tracer_state(monkeypatch):
     asyncio.run(
         _run_batch(
             [
-                SpecialistTask(agent="security", task="a"),
-                SpecialistTask(agent="infra", task="b"),
+                SpecialistTask(agent="security", task="check the token check in login() against the session store it reads"),
+                SpecialistTask(agent="infra", task="check the base image tag and whether the container runs as root"),
             ],
             SPECIALISTS,
             CONTEXT,
@@ -166,7 +169,7 @@ def test_a_failing_specialist_does_not_kill_the_batch(monkeypatch):
 
     runs = asyncio.run(
         _run_batch(
-            [SpecialistTask(agent="security", task="a"), SpecialistTask(agent="infra", task="b")],
+            [SpecialistTask(agent="security", task="check the token check in login() against the session store it reads"), SpecialistTask(agent="infra", task="check the base image tag and whether the container runs as root")],
             SPECIALISTS,
             CONTEXT,
             [],
@@ -208,7 +211,7 @@ def test_dispatch_tool_collects_runs_out_of_band(monkeypatch):
     result = asyncio.run(
         dispatch.ainvoke(
         {
-            "args": {"tasks": [{"agent": "security", "task": "check auth", "files": ["app/auth.py"]}]},
+            "args": {"tasks": [{"agent": "security", "task": "check the token check in login() against the session store it reads", "files": ["app/auth.py"]}]},
             "id": "call-1",
             "name": "dispatch_specialists",
             "type": "tool_call",
@@ -233,7 +236,7 @@ def test_a_non_llm_error_also_does_not_kill_the_batch(monkeypatch):
 
     runs = asyncio.run(
         _run_batch(
-            [SpecialistTask(agent="security", task="a"), SpecialistTask(agent="infra", task="b")],
+            [SpecialistTask(agent="security", task="check the token check in login() against the session store it reads"), SpecialistTask(agent="infra", task="check the base image tag and whether the container runs as root")],
             SPECIALISTS,
             CONTEXT,
             [],
@@ -269,7 +272,7 @@ def test_a_failure_in_the_tracer_itself_does_not_kill_the_batch(monkeypatch):
 
     runs = asyncio.run(
         _run_batch(
-            [SpecialistTask(agent="security", task="a"), SpecialistTask(agent="infra", task="b")],
+            [SpecialistTask(agent="security", task="check the token check in login() against the session store it reads"), SpecialistTask(agent="infra", task="check the base image tag and whether the container runs as root")],
             SPECIALISTS,
             CONTEXT,
             [],
@@ -296,8 +299,8 @@ def test_cancellation_is_not_swallowed_as_a_specialist_error(monkeypatch):
         asyncio.run(
             _run_batch(
                 [
-                    SpecialistTask(agent="security", task="a"),
-                    SpecialistTask(agent="infra", task="b"),
+                    SpecialistTask(agent="security", task="check the token check in login() against the session store it reads"),
+                    SpecialistTask(agent="infra", task="check the base image tag and whether the container runs as root"),
                 ],
                 SPECIALISTS,
                 CONTEXT,
@@ -327,7 +330,7 @@ def test_master_failure_after_a_batch_keeps_the_completed_runs(monkeypatch):
             # Stand in for the master: dispatch one batch, then die.
             await dispatch_holder["tool"].ainvoke(
                 {
-                    "args": {"tasks": [{"agent": "security", "task": "check auth"}]},
+                    "args": {"tasks": [{"agent": "security", "task": "check the token check in login() against the session store it reads"}]},
                     "id": "call-1",
                     "name": "dispatch_specialists",
                     "type": "tool_call",
@@ -462,3 +465,59 @@ def test_missing_shared_rules_fails_loudly_rather_than_silently():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+# --- task quality ------------------------------------------------------------
+
+
+def test_a_vague_task_is_rejected_rather_than_dispatched():
+    """The strongest measured lever on what a review finds.
+
+    Same specialist, same file: 7 findings for a task naming the file and what
+    to examine, 2 for "review these files for coding_standards problems". A
+    specialist spends its whole tool budget on whatever question it is given,
+    so a bad question costs the same as a good one and returns a third as much.
+
+    Rejected rather than accepted-and-logged because the master is fed its own
+    rejections — told the task was thin, it writes a better one and
+    re-dispatches.
+    """
+    accepted, rejections = _validate_tasks(
+        [SpecialistTask(agent="security", task="review this")], SPECIALISTS, CHANGED
+    )
+
+    assert accepted == []
+    assert "too vague" in rejections[0]
+    assert "security" in rejections[0], "the master needs to know which task to redo"
+
+
+def test_a_task_that_only_restates_the_specialist_name_is_rejected():
+    """"Review these files for security problems" tells the security specialist
+    nothing it did not already know from being the security specialist."""
+    accepted, rejections = _validate_tasks(
+        [SpecialistTask(agent="security", task="Review these files for security problems.")],
+        SPECIALISTS,
+        CHANGED,
+    )
+
+    assert accepted == []
+    assert "restates the specialist" in rejections[0]
+
+
+def test_a_task_naming_what_to_examine_is_accepted():
+    accepted, rejections = _validate_tasks(
+        [
+            SpecialistTask(
+                agent="security",
+                task=(
+                    "ProcessReturnAsync restocks products and computes a refund. "
+                    "Check the refund against what OrderItem records."
+                ),
+            )
+        ],
+        SPECIALISTS,
+        CHANGED,
+    )
+
+    assert len(accepted) == 1
+    assert rejections == []

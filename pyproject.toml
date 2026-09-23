@@ -8,18 +8,12 @@ version = "0.2.0"
 description = "Multi-agent reviewer for staged git changes."
 requires-python = ">=3.10"
 dependencies = [
-    "typer>=0.12",
     "pydantic>=2.7",
     "tiktoken>=0.7",
     "pyyaml>=6.0",
-    "langchain[mcp]>=1.4.0",
+    "langchain>=1.4.0",
     "langgraph>=0.2",
     "langchain-openai>=0.2",
-    "mcp>=2.0",
-    # Imported at module scope by reviewer/mcp/github_client.py and the
-    # fs_server; previously only present as a transitive dependency, so a
-    # clean `pip install .` produced an ImportError on first run.
-    "fastmcp>=4.0",
     # reviewer/core/tracer.py
     "rich>=13.0",
     "python-dotenv>=1.0",
@@ -55,9 +49,6 @@ ignore = [
     # Line length is the formatter's concern, and the explanatory comments in
     # this codebase are deliberately long-form.
     "E501",
-    # `typer.Option(...)` in an argument default is how Typer declares a CLI.
-    # Obeying B008 would mean rewriting every command signature.
-    "B008",
     # Nested `with` is sometimes the clearer read, especially in tests that
     # nest a tracer scope inside an executor.
     "SIM117",

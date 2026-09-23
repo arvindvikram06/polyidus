@@ -1,16 +1,13 @@
 """Map a finding onto a line GitHub will accept as a review comment.
 
-A specialist reports "SQL injection in auth.py around line 6". GitHub's review
-API needs ``path`` + ``line`` + ``side``, and rejects with 422 any line that is
-not part of the pull request diff. This module is that translation, and it is
-the only place that understands unified-diff line arithmetic.
+GitHub's review API needs ``path`` + ``line`` + ``side`` and 422s any line not
+in the diff. This is that translation, and the only place that understands
+unified-diff line arithmetic.
 
-The arithmetic: a hunk header ``@@ -2,5 +2,7 @@`` means the old file's section
-starts at line 2 and runs 5 lines, the new file's starts at line 2 and runs 7.
-Walking the body, a context line (' ') advances both counters, an addition
-('+') advances only the new counter, a deletion ('-') only the old. A line is
-addressable on the RIGHT side if it exists in the new file within some hunk,
-and on the LEFT side if it exists in the old file.
+A hunk header ``@@ -2,5 +2,7 @@`` means the old section starts at line 2 for 5
+lines, the new at 2 for 7. Walking the body: context (' ') advances both
+counters, an addition ('+') only the new, a deletion ('-') only the old. A line
+is addressable on RIGHT if it exists in the new file, LEFT if in the old.
 """
 
 from __future__ import annotations
@@ -43,8 +40,7 @@ class FileHunks(BaseModel):
     right: set[int] = Field(default_factory=set)
     # Old-file line numbers present in some hunk (deletions + context).
     left: set[int] = Field(default_factory=set)
-    # Additions only. Preferred targets: a comment on code the PR introduced
-    # is almost always what the specialist meant.
+    # Additions only — a comment on introduced code is almost always meant.
     added: set[int] = Field(default_factory=set)
 
 
@@ -123,10 +119,9 @@ def anchor_finding(
 ) -> CommentAnchor:
     """Resolve one finding to the most precise position GitHub will accept.
 
-    Falls back rather than failing: an unplaceable finding becomes a file-level
-    comment, and a finding about a file outside the diff is reported as NONE so
-    the caller can fold it into the review body. Nothing is silently dropped,
-    and nothing is posted at a line that would 422.
+    Falls back rather than failing: unplaceable becomes file-level, a file
+    outside the diff becomes NONE for the caller to fold into the body. Nothing
+    is silently dropped, nothing is posted at a line that would 422.
     """
     file_hunks = hunks.get(file_path)
     if file_hunks is None:
@@ -153,14 +148,11 @@ def anchor_finding(
 def anchor_findings(findings: list, diff_text: str) -> None:
     """Resolve every finding to a position GitHub will accept, in place.
 
-    Lives here rather than in an orchestrator because it is pure anchoring: the
-    diff and the findings go in, `finding.anchor` comes out. It was previously
-    in `core/orchestrator.py`, which meant anything needing to anchor a finding
-    also imported the CLI's sources, sessions and MCP clients.
+    Pure anchoring — the diff and the findings go in, `finding.anchor` comes out.
 
-    Done before a human sees anything, so triage can show which findings will
-    land inline, which only on the file, and which cannot be posted at all —
-    and so a hallucinated line number is caught here rather than as a 422.
+    Done before a human sees anything, so triage can show what will land inline,
+    what only on the file, and what cannot be posted — and so a hallucinated line
+    number is caught here rather than as a 422.
     """
     hunks = parse_hunks(diff_text)
     for finding in findings:

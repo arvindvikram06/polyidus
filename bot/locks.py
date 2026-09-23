@@ -1,13 +1,8 @@
 """Per-pull-request mutex, in Redis.
 
-Why this is not a Python variable: with one worker an in-process lock is
-correct, and with two it silently stops working — each replica holds its own
-copy, both believe they have the lock, and two reviews run concurrently on the
-same PR posting duplicate comments. That bug does not appear in development.
-It appears the first time you scale.
-
-Different PRs run in parallel. The same PR serialises. Two pushes in quick
-succession therefore queue rather than collide.
+Not an in-process lock: with two workers each replica holds its own copy, both
+believe they have it, and two reviews run concurrently posting duplicate
+comments. Different PRs run in parallel; the same PR serialises.
 """
 
 from __future__ import annotations
@@ -53,13 +48,10 @@ class LockBusy(RuntimeError):
 async def pr_lock(owner: str, repo: str, pr_number: int):
     """Hold the lock for one PR, or raise LockBusy immediately.
 
-    `SET key token NX EX ttl` is the acquire: atomic, and self-expiring so a
-    worker that dies without releasing does not wedge the PR forever.
-
-    The random token matters on release. A plain `DEL` would let a worker whose
-    lock had already expired delete the lock a *different* worker has since
-    taken — so the compare-and-delete is done in Lua, which Redis runs
-    atomically.
+    `SET key token NX EX ttl` acquires: atomic, and self-expiring so a dead
+    worker does not wedge the PR. The random token matters on release — a plain
+    `DEL` could delete a lock a *different* worker has since taken, so the
+    compare-and-delete runs in Lua.
     """
     key = _key(owner, repo, pr_number)
     token = str(uuid.uuid4())

@@ -44,3 +44,10 @@ OrderApi/
 
 # Sample app used as review fixture
 EstateSync/
+
+# CLIProxyAPI config — holds a live credential (OAuth-backed now; .bak still
+# has the API key it replaced)
+cliproxy/config.yaml*
+
+# Management panel the proxy downloads at runtime
+cliproxy/static/

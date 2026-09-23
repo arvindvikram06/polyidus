@@ -1,29 +1,19 @@
 """Turn a finished review into inline comments on the pull request.
 
-Nothing here is driven by a model. The findings are already written, already
-anchored to a line, and already judged; this module only formats them and
-posts.
+No model runs here: findings are already written, anchored and judged. One rule
+shapes the module — every finding goes inline on the line it concerns, and the
+summary comment contains no findings at all.
 
-The shape follows one rule, which is the reason this module replaced a single
-summary comment:
-
-    Every finding goes inline, on the line it is about. The summary comment
-    contains no findings at all.
-
-An inline comment creates a resolvable thread. That thread *is* the record: it
-carries the finding, the human's reply, and — once someone resolves it — the
-decision. A findings list in one comment carries none of that. It cannot be
-replied to per item, cannot be resolved per item, and needs a parallel database
-to track what has already been said.
-
-So the platform holds the review state, and the only thing left in Postgres is
-the job queue — which is there because we own the webhook, not because a
-review needs it.
+An inline comment creates a resolvable thread, and that thread *is* the record:
+the finding, the reply, and the decision. A list in one comment carries none of
+those and would need a database to track what was already said.
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import re
 from typing import Any
 
 from bot.github import client
@@ -40,26 +30,41 @@ _SEVERITY_ORDER = {
     Severity.INFO: 4,
 }
 
-# Oswald caps inline comments per review at ten and drops the lowest-impact
-# findings past that. The reasoning is sound and worth copying: a review with
-# thirty inline comments is not read, it is dismissed. The cap is on what is
-# *posted*, not on what is found — the rest are still recorded.
+# A review with thirty inline comments is dismissed, not read. The cap is on
+# what is *posted*, not on what is found.
 MAX_INLINE_COMMENTS = 10
 
-# Anything below this is not posted as a comment. `info` is the severity a
-# specialist must use when it could not verify a claim, and it is also where
-# observations land — one real review posted "this is an observation, not a
-# defect requiring immediate action" as an inline comment, nine lines above an
-# unfixed SQL injection. A review is read in severity order or not at all, so
-# an item that announces it needs no action is competing with the ones that do.
+# `info` is both "unverified" and "observation". One review posted "not a defect
+# requiring immediate action" nine lines above an unfixed SQL injection — an item
+# that announces it needs no action competes with the ones that do.
 MIN_INLINE_SEVERITY = Severity.LOW
+
+
+# An invisible fingerprint per comment, so a later run recognises what it already
+# said — record and key in the same object, rather than a table that could
+# disagree with what the human can see.
+#
+# The line number is deliberately NOT in the key: a push shifts every line below
+# an edit, and re-posting everything after a push is the failure this prevents.
+# Hashing the message alone collided on two hardcoded credentials in one file, so
+# the file and title are both in the key.
+_MARKER = re.compile(r"<!-- polyidus:([0-9a-f]{12}) -->")
+_STRIP = re.compile(r"[`*_\s]+")
+
+
+def marker_for(file_path: str, title: str) -> str:
+    key = f"{file_path}|{_STRIP.sub(' ', title).strip().lower()}"
+    return hashlib.sha256(key.encode()).hexdigest()[:12]
+
+
+def markers_in(body: str) -> set[str]:
+    return set(_MARKER.findall(body or ""))
 
 
 def comment_body(finding: Finding, also_found_by: list[str] | None = None) -> str:
     """One inline comment: the issue, its impact, and where the fix goes.
 
-    Kept short on purpose. A comment that needs scrolling gets collapsed by
-    GitHub, and a collapsed comment is an unread one.
+    Short on purpose — GitHub collapses a comment that needs scrolling.
     """
     lines = [f"**{finding.severity.value.upper()} — {finding.title}**", "", finding.message]
     if finding.suggested_patch:
@@ -71,6 +76,8 @@ def comment_body(finding: Finding, also_found_by: list[str] | None = None) -> st
         # away with the duplicate.
         credit += ", " + ", ".join(also_found_by)
     lines += ["", f"<sub>{credit}</sub>"]
+    # Renders as nothing. Read back by the next run to skip what is already said.
+    lines.append(f"<!-- polyidus:{marker_for(finding.file_path, finding.title)} -->")
     return "\n".join(lines)
 
 
@@ -82,32 +89,50 @@ def summary_body(
     requested_by: str,
     unplaceable: list[Finding],
     held_back: int,
+    already_said: int = 0,
+    resolved: int = 0,
+    marked_fixed: int = 0,
     overview: str = "",
     aborted: str | None = None,
     failed_specialists: list[str] | None = None,
 ) -> str:
     """The conversation-box comment. Context only — no findings.
 
-    The one deliberate exception is ``unplaceable``: findings about files this
-    pull request does not touch. They have no line to attach to, and dropping a
-    real finding to satisfy a formatting rule is the wrong trade. They go in a
-    collapsed block, clearly separated from the review itself.
+    One exception: ``unplaceable`` findings concern files the PR does not touch,
+    so they have no line. Dropping a real finding to satisfy a formatting rule is
+    the wrong trade, so they go in a collapsed block.
     """
-    lines = [
-        (
+    # A clean review has to SAY it is clean — "0 inline comment(s) posted"
+    # followed by a pointer to inline comments reads like a malfunction.
+    settled = resolved + marked_fixed
+    clean = posted == 0 and not unplaceable and not aborted and not failed_specialists
+    if clean and not already_said:
+        headline = (
+            f"**No issues found** at `{head_sha[:8]}` — {changed_files} file(s) "
+            "reviewed, nothing worth flagging."
+        )
+    elif clean:
+        headline = (
+            f"**Nothing new** at `{head_sha[:8]}` — {changed_files} file(s) reviewed. "
+            f"{already_said} open finding(s) still stand; no new ones."
+        )
+    elif posted == 0 and settled:
+        headline = (
+            f"**All clear** at `{head_sha[:8]}` — {changed_files} file(s) reviewed, "
+            f"and {settled} earlier finding(s) no longer come up."
+        )
+    else:
+        headline = (
             f"**Review complete** at `{head_sha[:8]}` — {changed_files} file(s) changed, "
             f"{posted} inline comment(s) posted."
-        ),
-        "",
-    ]
+        )
+    lines = [headline, ""]
 
     if aborted:
         lines += [f"> ⚠️ **Partial review.** {aborted}", ""]
 
     if failed_specialists:
-        # Stated before anything else. A reader who sees a clean review and no
-        # warning reasonably concludes the change was fully examined; naming
-        # what failed is what stops that.
+        # First, because a clean review with no warning reads as fully examined.
         lines += [
             "> ⚠️ **Incomplete.** No usable output from "
             + ", ".join(f"`{s}`" for s in failed_specialists)
@@ -116,17 +141,42 @@ def summary_body(
         ]
 
     if overview:
-        # An overview of the change is context, not a finding — it is what the
-        # summary is *for*. The rule it must not break is listing the issues.
+        # Context, not a finding. The rule it must not break is listing issues.
         lines += [overview, ""]
 
-    lines += [
-        (
-            "Findings are inline on the lines they concern. Reply in a thread to "
-            "disagree; resolve it when it is handled."
-        ),
-        "",
-    ]
+    if posted or unplaceable:
+        lines += [
+            (
+                "Findings are inline on the lines they concern. Reply in a thread to "
+                "disagree; resolve it when it is handled."
+            ),
+            "",
+        ]
+
+    if already_said:
+        lines += [
+            (
+                f"<sub>{already_said} finding(s) already have an open thread and "
+                "were not repeated.</sub>"
+            ),
+            "",
+        ]
+    if resolved:
+        lines += [
+            (
+                f"<sub>✅ {resolved} thread(s) resolved — that code no longer reports "
+                "a problem.</sub>"
+            ),
+            "",
+        ]
+    if marked_fixed:
+        lines += [
+            (
+                f"<sub>✅ {marked_fixed} finding(s) look fixed — each thread has a "
+                "reply saying so. Resolve them when you are happy.</sub>"
+            ),
+            "",
+        ]
 
     if unplaceable:
         lines += [
@@ -161,6 +211,28 @@ def summary_body(
     return "\n".join(lines)
 
 
+def split_already_said(
+    findings: list[Finding], existing_bodies: list[str]
+) -> tuple[list[Finding], list[Finding]]:
+    """Separate findings we have already commented on from genuinely new ones.
+
+    Without it, a re-run posts a second copy of every unfixed finding — measured:
+    eleven comments, several restating a thread open two lines away.
+    """
+    on_pr: set[str] = set()
+    for body in existing_bodies:
+        on_pr |= markers_in(body)
+
+    new: list[Finding] = []
+    already: list[Finding] = []
+    for finding in findings:
+        if marker_for(finding.file_path, finding.title) in on_pr:
+            already.append(finding)
+        else:
+            new.append(finding)
+    return new, already
+
+
 def build_comments(
     findings: list[Finding], agreed_by: dict[Any, list[str]] | None = None
 ) -> tuple[list[dict], list[dict], list[Finding], int]:
@@ -174,14 +246,11 @@ def build_comments(
     * ``unplaceable``   — no anchor at all; they belong in the summary
     * ``held_back``     — count dropped by the severity floor or density cap
 
-    The line/file split is not a style choice. A batched review's comments are
-    ``DraftPullRequestReviewComment`` objects, which have no ``subject_type``
-    field — so a single file-level comment in the array makes GitHub reject the
-    **entire** review with a 422. Measured: a review of seven file-level
-    findings failed completely until they were separated out.
+    The line/file split is forced: a batched review's comments are
+    ``DraftPullRequestReviewComment`` objects with no ``subject_type``, so one
+    file-level comment in the array makes GitHub 422 the **entire** review.
 
-    Sorted by severity so that if the cap bites, it drops the least important
-    findings rather than whichever happened to come last.
+    Sorted by severity so the cap drops the least important findings.
     """
     agreed_by = agreed_by or {}
     ranked = sorted(findings, key=lambda f: _SEVERITY_ORDER.get(f.severity, 9))
@@ -204,9 +273,8 @@ def build_comments(
             continue
         body = comment_body(finding, agreed_by.get(finding.id))
         if anchor.state is AnchorState.FILE:
-            # GitHub stores a file-level comment as line 1 and renders it at the
-            # top of the file, so without this it reads as a confident claim
-            # about line 1. Say plainly that the line is unknown.
+            # GitHub stores these at line 1, so without this it reads as a
+            # confident claim about line 1. Say the line is unknown.
             body = (
                 "<sub>📄 File-level: this finding's line could not be resolved, "
                 "so it is attached to the file rather than a line.</sub>\n\n"
@@ -232,15 +300,14 @@ async def post_review(
     """Post the review: one request for the line comments, then the file ones.
 
     File-level comments cannot travel inside a review (see ``build_comments``),
-    so they follow as individual calls. That costs one notification each, which
-    is why anchoring a finding to a *line* is worth the trouble.
+    so they follow individually — one notification each, which is why anchoring
+    to a *line* is worth the trouble.
 
-    If the batch is still rejected — a line GitHub will not accept, usually
-    because the head moved — the body is posted alone and every comment is
-    retried individually, so one bad line cannot discard a correct review.
+    If the batch is rejected (usually because the head moved) the body posts
+    alone and every comment is retried individually, so one bad line cannot
+    discard a correct review.
 
-    Returns ``(accepted, rejected)``, each rejection being the comment and
-    GitHub's reason, so a caller can log precisely what was lost.
+    Returns ``(accepted, rejected)`` with GitHub's reason for each rejection.
     """
     accepted = 0
     rejected: list[tuple[dict, str]] = []
@@ -260,7 +327,7 @@ async def post_review(
             "batched review rejected for %s/%s#%s (%s) — retrying comment by comment",
             owner, repo, pr_number, str(exc)[:160],
         )
-        # The body still belongs on the pull request even if every comment fails.
+        # The body belongs on the PR even if every comment fails.
         await client.create_review(
             installation_id, owner, repo, pr_number, body=body, comments=[], commit_id=head_sha
         )

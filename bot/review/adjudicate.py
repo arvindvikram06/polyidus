@@ -1,32 +1,19 @@
 """Collapse a review's findings into what a person should actually read.
 
-Specialists work concurrently on overlapping slices and cannot see each
-other's output, so the same defect is reported several times. Measured on one
-real pull request: **14 findings describing 7 distinct problems**, with
-per-row `SaveChangesAsync` reported four times at three different severities
-(`high`, `medium`, `low`, `low`).
+Concurrent specialists on overlapping slices cannot see each other, so the same
+defect arrives several times. Measured: **14 findings describing 7 distinct
+problems**, with one `SaveChangesAsync` reported four times at three severities.
+Every one was correct — the review was accurate and unreadable.
 
-Every one of those findings was factually correct. That is the point — the
-review was accurate and unreadable. A maintainer who opens seven `critical`
-items, three of which are the same sentence, stops trusting the tool whatever
-the words say.
+This **groups** same-defect findings, **re-scores** each group once against the
+rubric, **drops** findings the evidence does not support, and **writes** the
+summary read first.
 
-What this does:
+It never **rewrites a finding's text**: the adjudicator has read the findings,
+not the code, so any sentence it wrote about the code would be unverifiable.
 
-* **groups** findings that describe the same defect
-* **re-scores** each group once, against the shared rubric
-* **drops** findings the evidence does not support
-* **writes** the summary a person reads first
-
-What it deliberately does not do: **rewrite any finding's text**. It chooses a
-primary and keeps that specialist's words. The adjudicator has read the
-findings, not the code, so any sentence it wrote about the code would be
-unverifiable — and a confident, unsourced sentence is exactly the failure this
-whole design is built to avoid.
-
-If adjudication fails for any reason the original findings pass through
-unchanged. Losing a real finding to a failed merge is far worse than showing a
-duplicate.
+On any failure the original findings pass through unchanged — losing a real
+finding to a failed merge is worse than showing a duplicate.
 """
 
 from __future__ import annotations
@@ -87,8 +74,8 @@ class Adjudication(BaseModel):
 class Adjudicated:
     findings: list[Finding]
     summary: str = ""
-    # finding id -> the other specialists that independently reported it.
-    # Agreement is signal worth showing, so it survives the merge.
+    # finding id -> specialists that independently reported it. Agreement is
+    # signal, so it survives the merge.
     agreed_by: dict[str, list[str]] = field(default_factory=dict)
     dropped: list[tuple[Finding, str]] = field(default_factory=list)
     ran: bool = False
@@ -211,8 +198,8 @@ async def adjudicate(
 
     problem = _valid(plan, len(findings))
     if problem:
-        # Deliberately all-or-nothing. A partially applied plan could silently
-        # discard a critical finding, and no output is worth that risk.
+        # All-or-nothing: a partially applied plan could silently discard a
+        # critical finding.
         log.warning("adjudication plan rejected (%s); passing findings through", problem)
         return Adjudicated(findings=findings, ran=False)
 
@@ -221,9 +208,8 @@ async def adjudicate(
     for group in plan.groups:
         primary = findings[group.primary]
         primary.severity = group.severity
-        # The primary's own specialist is excluded: one specialist reporting a
-        # defect twice is not independent agreement, and crediting it to itself
-        # reads as a bug to anyone looking at the comment.
+        # The primary's own specialist is excluded — reporting a defect twice
+        # is not independent agreement, and crediting it to itself reads as a bug.
         others = sorted(
             {findings[i].subagent for i in group.duplicates} - {primary.subagent}
         )

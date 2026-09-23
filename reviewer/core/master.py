@@ -69,7 +69,22 @@ class SpecialistTask(BaseModel):
     """One unit of review work assigned to one specialist."""
 
     agent: str = Field(description="Specialist name from the catalog.")
-    task: str = Field(description="Specific instruction for this run: what to look for and where.")
+    task: str = Field(
+        description=(
+            "What this specialist should look for, in terms of THIS change. "
+            "Name the types, methods or fields involved — not the specialist's "
+            "own subject area, which it already knows.\n"
+            "Measured: the same specialist on the same file returned 7 findings "
+            "for a task that named the file and what to examine, and 2 for "
+            "'review these files for coding_standards problems'. The wording "
+            "here is the strongest single influence on what comes back.\n"
+            "GOOD: 'OrderReturnsService.ProcessReturnAsync restocks products and "
+            "computes a refund. Check the refund amount against what OrderItem "
+            "records, and whether the two SaveChangesAsync calls can leave "
+            "stock and order status disagreeing.'\n"
+            "BAD:  'Review OrderReturnsService.cs for coding standards issues.'"
+        )
+    )
     files: list[str] = Field(
         default_factory=list,
         description="Subset of the changed files this task covers. Empty means the whole diff.",
@@ -106,6 +121,37 @@ def _scope_label(files: list[str]) -> str:
     return ", ".join(files) if files else "full diff"
 
 
+# Measured: the vague form ("review these files for X problems") runs ~45
+# characters; the form that produced three times the findings runs past 120.
+_MIN_TASK_CHARS = 60
+
+
+def _vague_task(task: SpecialistTask) -> str | None:
+    """Why this instruction is too thin to dispatch, or None.
+
+    Rejected rather than logged: the master feeds on its own rejections and
+    rewrites. Accepting one spends a specialist's whole budget on a bad question.
+    """
+    text = " ".join((task.task or "").split())
+
+    # Before length, because it is the more actionable complaint: "review X for
+    # security problems" tells the security specialist nothing it did not know.
+    subject = task.agent.lower().replace("_", " ")
+    if subject in text.lower().replace("_", " ") and len(text) < 100:
+        return (
+            f"{task.agent}: task restates the specialist's own name instead of "
+            "naming what to examine."
+        )
+
+    if len(text) < _MIN_TASK_CHARS:
+        return (
+            f"{task.agent}: task is too vague ({len(text)} chars). Name the "
+            "types, methods or fields to examine in this change, not the "
+            "specialist's subject area."
+        )
+    return None
+
+
 def _validate_tasks(
     tasks: list[SpecialistTask],
     specialists: dict[str, SpecialistSpec],
@@ -113,8 +159,8 @@ def _validate_tasks(
 ) -> tuple[list[SpecialistTask], list[str]]:
     """Drop tasks the master cannot legally ask for; repair the ones we can.
 
-    Returns the accepted tasks and human-readable rejection notes, which are fed
-    back to the master so it can correct itself rather than silently losing work.
+    Rejection notes are fed back so the master corrects itself rather than
+    silently losing work.
     """
     accepted: list[SpecialistTask] = []
     rejections: list[str] = []
@@ -125,6 +171,11 @@ def _validate_tasks(
             rejections.append(
                 f"unknown specialist '{task.agent}' (available: {', '.join(sorted(specialists))})"
             )
+            continue
+
+        thin = _vague_task(task)
+        if thin:
+            rejections.append(thin)
             continue
 
         unknown = [path for path in task.files if path not in known_files]
@@ -155,9 +206,8 @@ async def _execute_task(
 ) -> SpecialistRun:
     """Run one task. A failed specialist must not kill the batch.
 
-    Errors are caught *inside* ``tracer.run`` so ``agent_error`` lands on this
-    run rather than as a floating event — which is why this catches here at all
-    instead of leaving it to the backstop in ``_run_batch``.
+    Caught *inside* ``tracer.run`` so ``agent_error`` lands on this run rather
+    than as a floating event — hence catching here as well as in ``_run_batch``.
     """
     scope = task.files or diff_context.changed_files
     with tracer.run(task.agent, _scope_label(task.files)):
@@ -176,9 +226,8 @@ async def _execute_task(
             return SpecialistRun(agent=task.agent, task=task.task, files=task.files, error=str(exc))
         except Exception as exc:
             # `run_subagent_review` funnels its own failures into LLMError, so
-            # anything here came from the machinery around it — a bad slice, a
-            # tool wrapper, a schema error. Still not worth the batch.
-            # CancelledError is a BaseException and deliberately passes through.
+            # this is the machinery around it — a bad slice, a tool wrapper, a
+            # schema error. CancelledError passes through deliberately.
             reason = f"{type(exc).__name__}: {exc}"
             tracer.agent_error(task.agent, reason)
             return SpecialistRun(agent=task.agent, task=task.task, files=task.files, error=reason)
@@ -196,15 +245,12 @@ async def _run_batch(
 ) -> list[SpecialistRun]:
     """Fan the batch out as concurrent tasks, at most MAX_FANOUT at a time.
 
-    ``asyncio.gather`` preserves argument order, so results come back in the
-    order the master asked for them. Each coroutine runs in its own context, so
-    the tracer's per-run state stays isolated between concurrent specialists.
+    ``gather`` preserves argument order, and each coroutine has its own context
+    so the tracer's per-run state stays isolated.
 
-    ``return_exceptions=True`` is what makes the isolation structural. Without
-    it a single escaping exception cancels every sibling coroutine mid-flight,
-    destroying finished work to report one failure — and the guarantee would
-    rest on ``_execute_task`` happening to catch everything, including from
-    ``tracer.run`` itself, which writes to the trace file and can fail.
+    ``return_exceptions=True`` makes the isolation structural: without it one
+    escaping exception cancels every sibling mid-flight, destroying finished work
+    to report one failure.
     """
     workers = max(1, min(MAX_FANOUT, len(tasks)))
     tracer.dispatch([(t.agent, _scope_label(t.files), t.task) for t in tasks], workers, batch)
@@ -227,8 +273,8 @@ async def _run_batch(
             runs.append(result)
             continue
         if isinstance(result, asyncio.CancelledError):
-            # Shutdown, not a specialist failure. Swallowing it here would
-            # report a cancelled review as a completed one.
+            # Shutdown, not a failure. Swallowing it would report a cancelled
+            # review as a completed one.
             raise result
         reason = f"{type(result).__name__}: {result}"
         tracer.agent_error(task.agent, reason)
@@ -287,8 +333,7 @@ def build_dispatch_tool(
         runs = await _run_batch(
             accepted, specialists, diff_context, tools, state["batch"], repo_context
         )
-        # One write, from the calling thread, after every worker has joined — so
-        # the shared dict needs no lock.
+        # One write after every worker has joined, so no lock is needed.
         collected[tool_call_id] = runs
         return _summarize_batch(runs, rejections)
 
@@ -320,10 +365,8 @@ def _absorb(
 def _salvage_result(collected: dict[str, list[SpecialistRun]], reason: str) -> MasterResult:
     """Rebuild a result from completed runs after the master loop died.
 
-    The message history is gone — so routing_summary and cap_reached are
-    unavailable — but ``collected`` holds every run that finished, in dispatch
-    order, and those findings were paid for. Throwing them away because the
-    master's own next call 429'd is the expensive failure this avoids.
+    The message history is gone (so no routing_summary or cap_reached), but
+    ``collected`` holds every finished run and those findings were paid for.
     """
     trace: list[MasterTraceEntry] = []
     findings: list[Finding] = []
@@ -374,6 +417,7 @@ async def run_master_loop(
     model: str = DEFAULT_MASTER_MODEL,
     specialists: dict[str, SpecialistSpec] | None = None,
     repo_context: str = "",
+    history: str = "",
 ) -> MasterResult:
     tracer.review_start(len(diff_context.changed_files))
     collected: dict[str, list[SpecialistRun]] = {}
@@ -391,6 +435,10 @@ async def run_master_loop(
         f"Changed files:\n{chr(10).join('- ' + f for f in diff_context.changed_files)}\n\n"
         f"Diff:\n{diff_context.diff_text}"
     )
+    if history:
+        # Before the diff: what was already said changes what is worth looking
+        # at. Filtering afterwards meant reviewing everything twice.
+        user_content = f"{history}\n\n{user_content}"
 
     try:
         agent = create_agent(
@@ -408,13 +456,19 @@ async def run_master_loop(
         result = await agent.ainvoke({"messages": [HumanMessage(content=user_content)]})
     except Exception as exc:
         reason = f"{type(exc).__name__}: {exc}"
-        # Specialists that already finished are in `collected`, and their work
-        # is not cheap. The master's own call is what usually dies here — a 429
-        # or a context overflow on batch two — so the completed batches are
-        # still a usable review. Only a failure with nothing in hand is fatal.
+        # if master's own call dies here (a 429, a context overflow on
+        # batch two), and the finished batches in `collected` are still a usable
+        # review. Only a failure with nothing in hand is fatal.
         if collected:
             tracer.agent_error("master", reason)
-            return _salvage_result(collected, reason)
+            salvaged = _salvage_result(collected, reason)
+            tracer.review_end(len(salvaged.findings), len(tracer.runs))
+            return salvaged
         raise LLMError(reason) from exc
 
-    return _extract_result(result.get("messages", []), collected)
+    final = _extract_result(result.get("messages", []), collected)
+    # `review_end` renders what the tracer collected. It was never called from
+    # here, so the tree was built and discarded every run — which is why a
+    # specialist that hit its cap looked like one with nothing to report.
+    tracer.review_end(len(final.findings), len(tracer.runs))
+    return final

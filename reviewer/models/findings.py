@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
@@ -18,15 +17,6 @@ class Severity(str, Enum):
     CRITICAL = "critical"
 
 
-class FindingStatus(str, Enum):
-    PENDING = "pending"
-    ACCEPTED = "accepted"
-    REJECTED = "rejected"
-    APPLIED = "applied"
-    HELD = "held"
-    POSTED = "posted"
-
-
 class EvidenceItem(BaseModel):
     tool: str
     args: dict[str, Any]
@@ -38,10 +28,9 @@ class Finding(BaseModel):
     subagent: str
     file_path: str
     line_range: tuple[int, int] | None = None
-    # The offending source line, copied verbatim by the specialist. This is
-    # what places the comment: quoting is a copy, which models do reliably,
-    # where counting lines through diff hunks is arithmetic, which they do
-    # not. `line_range` above is kept only as a tie-breaker and a fallback.
+    # Copied verbatim by the specialist, and what places the comment: quoting is
+    # a copy, which models do reliably; counting through hunks is arithmetic,
+    # which they do not. `line_range` is a tie-breaker and fallback.
     offending_line: str | None = None
     severity: Severity
     title: str
@@ -52,23 +41,22 @@ class Finding(BaseModel):
     suggested_patch: str | None = None
     # Where this finding can be posted on the PR, resolved after the review.
     anchor: CommentAnchor | None = None
-    status: FindingStatus = FindingStatus.PENDING
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    # Which model produced this. Write-only today, and kept deliberately:
+    # findings are now compared across backends, and "which model said this"
+    # is the first question asked of a run.
     model_used: str | None = None
-    # True when this row records that a specialist FAILED, rather than something
-    # it found. The CLI shows these in its report on purpose — a human reading a
-    # terminal should know a specialist died rather than silently seeing fewer
-    # findings. A bot must not: posted to a pull request it becomes a comment
-    # about a file that has nothing wrong with it. Consumers that publish are
-    # expected to filter on this and report the failure in the summary instead.
+    # This row records that a specialist FAILED, not something it found. A
+    # terminal report should show it — a human must know a specialist died
+    # rather than silently see fewer findings. Anything that publishes must
+    # filter it out: posted, it comments on a file with nothing wrong.
     is_failure: bool = False
 
 
 class SpecialistRun(BaseModel):
     """One specialist executed against one slice of the diff.
 
-    The master may run the same specialist several times in a batch with
-    different scopes, so a run — not an agent name — is the unit of work.
+    The same specialist may run several times in a batch with different scopes,
+    so a run — not an agent name — is the unit of work.
     """
 
     agent: str

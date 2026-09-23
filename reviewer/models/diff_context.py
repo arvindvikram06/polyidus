@@ -6,9 +6,8 @@ from functools import lru_cache
 
 from pydantic import BaseModel
 
-# `diff --git a/<path> b/<path>` — the `b/` (post-image) path is what
-# `git diff --name-only` reports, including for renames, so it is the key we
-# match scoping requests against.
+# The `b/` (post-image) path is what `git diff --name-only` reports, renames
+# included, so it is the key scoping requests match against.
 _FILE_HEADER = re.compile(r"^diff --git a/(?P<a>.+?) b/(?P<b>.+?)$", re.MULTILINE)
 
 
@@ -19,9 +18,8 @@ class DiffContext(BaseModel):
 
 @lru_cache(maxsize=1)
 def _encoding():
-    # Imported lazily: loading the BPE table is slow and pulls a network
-    # dependency on first use, and the diff-splitting helpers below must stay
-    # importable (and testable) without it.
+    # Lazy: the BPE table is slow and fetches on first use, and the helpers
+    # below must stay importable without it.
     import tiktoken
 
     return tiktoken.get_encoding("cl100k_base")
@@ -52,10 +50,9 @@ def split_by_file(diff_text: str) -> dict[str, str]:
 def slice_diff(diff_text: str, files: Sequence[str]) -> str:
     """Return only the sections of ``diff_text`` belonging to ``files``.
 
-    An empty ``files`` means "no scoping requested" and returns the whole diff.
-    If none of the requested paths are present the full diff is returned too —
-    a specialist reviewing everything is wasteful, but one reviewing nothing is
-    useless.
+    Empty ``files`` means no scoping, and returns everything. So does a set of
+    paths none of which are present — a specialist reviewing everything is
+    wasteful, one reviewing nothing is useless.
     """
     if not files:
         return diff_text

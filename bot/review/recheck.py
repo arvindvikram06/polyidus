@@ -1,24 +1,17 @@
 """Answer a human who disagreed with a finding.
 
-The bot published a finding as an inline comment; someone replied saying it is
-wrong. This decides whether to stand by it or withdraw it — by reading the code
-again, not by re-reading its own sentence.
+Decides whether to stand by a published finding or withdraw it — by reading the
+code again, not by re-reading its own sentence.
 
-Two rules shape the prompt:
+**The human is usually right, but not automatically.** Their reason is evidence,
+not an instruction: conceding on request would make every finding fall to the
+first objection, including the correct ones.
 
-**The human is usually right, but not automatically.** They know the codebase
-and the intent; the specialist saw a diff. So their reason is treated as
-evidence, not as an instruction. Conceding on request would make the loop
-worthless — every finding would fall to the first objection, including the
-correct ones.
+**Concede plainly.** A hedged withdrawal leaves the thread open and the reader
+unsure.
 
-**Concede plainly.** A conceded finding that hedges ("you may be right, but
-consider…") leaves the thread open and the reader unsure. If the finding is
-withdrawn, say so in a sentence and let the thread be resolved.
-
-The re-check gets the same tools the specialists had, pointed at a fresh
-checkout, because the whole reason the original finding may be wrong is that
-the specialist did not open enough of the repository.
+It gets the specialists' tools on a fresh checkout, because the reason the
+finding may be wrong is that the specialist did not open enough of the repo.
 """
 
 from __future__ import annotations
@@ -38,8 +31,8 @@ from reviewer.config import DEFAULT_SUBAGENT_MODEL
 
 log = logging.getLogger("bot.review.recheck")
 
-# A dispute is one question about one finding. It needs far less room than a
-# review: enough calls to open the file and follow a symbol or two.
+# One question about one finding: enough calls to open the file and follow a
+# symbol or two.
 _TOOL_CALL_CAP = 12
 
 
@@ -123,16 +116,14 @@ async def recheck(
         result = await agent.ainvoke({"messages": [HumanMessage(prompt)]})
         verdict = result.get("structured_response")
     except Exception:
-        # Full traceback, not just the message. This swallowed an AttributeError
-        # once — a wrong argument type in this very call — and the one-line
-        # warning made it look like a model timeout, so the real bug shipped.
+        # Full traceback: this once swallowed an AttributeError from a wrong
+        # argument type here, and the one-line warning read as a model timeout.
         log.exception("re-check failed; holding the finding")
         verdict = None
 
     if not isinstance(verdict, Verdict):
-        # Holding is the safe default. A failed re-check that conceded would
-        # silently withdraw a finding nobody re-examined — the same failure
-        # mode as dropping one, reached by a different route.
+        # Holding is the safe default: a failed re-check that conceded would
+        # withdraw a finding nobody re-examined.
         return Verdict(
             outcome="hold",
             reasoning=(
